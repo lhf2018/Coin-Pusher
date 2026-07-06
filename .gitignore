@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+preview.log
+preview.err
+
+.DS_Store
+Thumbs.db
