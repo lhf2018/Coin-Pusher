@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "cannon-es": "^0.20.0",
+    "taichi.js": "^0.0.36",
     "three": "^0.179.1"
   },
   "devDependencies": {

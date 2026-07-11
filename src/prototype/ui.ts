@@ -17,6 +17,7 @@ export interface UIRefs {
   debugPanel: HTMLDivElement;
   debugPresetBar: HTMLDivElement;
   debugToggleButton: HTMLButtonElement;
+  physicsStatus: HTMLDivElement;
   overlay: HTMLDivElement;
   economyHint: HTMLDivElement;
   dropButton: HTMLButtonElement;
@@ -147,6 +148,16 @@ export function createUI(root: HTMLElement): UIRefs {
   debugToggleButton.className = "ghost-button debug-toggle-button";
   debugToggleButton.textContent = "开发调试";
 
+  const physicsStatus = document.createElement("div");
+  physicsStatus.className = "physics-status physics-status-probing";
+  physicsStatus.innerHTML = `
+    <span class="physics-status-dot"></span>
+    <div class="physics-status-copy">
+      <strong class="physics-status-title">Physics: Probing WebGPU</strong>
+      <span class="physics-status-detail">Checking whether Taichi can use this browser.</span>
+    </div>
+  `;
+
   const debugPanel = document.createElement("div");
   debugPanel.className = "debug-panel";
 
@@ -171,7 +182,7 @@ export function createUI(root: HTMLElement): UIRefs {
   mainButtons.append(dropButton, autoDropButton);
   upgradeButtons.append(coinUpgradeButton, speedUpgradeButton, autoUpgradeButton);
 
-  overlay.append(topBar, feverPill, debugPresetBar, debugToggleButton);
+  overlay.append(topBar, feverPill, debugPresetBar, physicsStatus, debugToggleButton);
   shell.append(viewport, overlay, sidebar, debugPanel);
   root.append(shell);
 
@@ -194,6 +205,7 @@ export function createUI(root: HTMLElement): UIRefs {
     debugPanel,
     debugPresetBar,
     debugToggleButton,
+    physicsStatus,
     overlay,
     economyHint,
     dropButton,

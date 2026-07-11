@@ -20,6 +20,11 @@ import {
   SessionTask,
   SlotType,
 } from "./types";
+import type {
+  TaichiAssistResult,
+  TaichiAssistSnapshotItem,
+  TaichiHybridPhysics,
+} from "./TaichiHybridPhysics";
 
 const BONUS_ROTATION: BonusType[] = ["coinRain", "fever", "chestDrop"];
 
@@ -108,6 +113,12 @@ export class CoinPusherApp {
   private pusherMesh!: THREE.Group;
   private pusherBody!: CANNON.Body;
   private debugPanelBuilt = false;
+  private physicsBackend: "cannon" | "taichi-hybrid" = "cannon";
+  private taichiPhysics: TaichiHybridPhysics | null = null;
+  private taichiPhysicsInitStarted = false;
+  private taichiAdapterAvailable: boolean | null = null;
+  private taichiPendingComputation: Promise<void> | null = null;
+  private taichiPendingResult: TaichiAssistResult | null = null;
 
   public constructor(root: HTMLDivElement) {
     this.ui = createUI(root);
@@ -142,10 +153,85 @@ export class CoinPusherApp {
   }
 
   public start(): void {
+    void this.initializeExperimentalPhysics();
     this.scheduleAction(300, () => {
       this.pushMessage("机台准备完成。按 Space 或点击投币开始。");
     });
     this.loop();
+  }
+
+  private getRequestedPhysicsMode(): "auto" | "taichi" | "cannon" {
+    if (typeof window === "undefined") {
+      return "cannon";
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("physics");
+    if (requested === "cannon") {
+      return "cannon";
+    }
+    if (requested === "taichi") {
+      return "taichi";
+    }
+    return "auto";
+  }
+
+  private async hasUsableWebGpuAdapter(): Promise<boolean> {
+    if (typeof navigator === "undefined" || !("gpu" in navigator)) {
+      this.taichiAdapterAvailable = false;
+      return false;
+    }
+
+    try {
+      const gpuNavigator = navigator as Navigator & {
+        gpu: {
+          requestAdapter: () => Promise<object | null>;
+        };
+      };
+      const adapter = await gpuNavigator.gpu.requestAdapter();
+      this.taichiAdapterAvailable = adapter !== null;
+      return adapter !== null;
+    } catch (error) {
+      console.warn("WebGPU adapter probe failed.", error);
+      this.taichiAdapterAvailable = false;
+      return false;
+    }
+  }
+
+  private async initializeExperimentalPhysics(): Promise<void> {
+    if (this.taichiPhysicsInitStarted) {
+      return;
+    }
+
+    const requestedMode = this.getRequestedPhysicsMode();
+    if (requestedMode === "cannon") {
+      this.taichiAdapterAvailable = false;
+      return;
+    }
+
+    if (!(await this.hasUsableWebGpuAdapter())) {
+      if (requestedMode === "taichi") {
+        this.pushMessage("WebGPU adapter unavailable. Falling back to Cannon physics.");
+        this.renderState();
+      }
+      return;
+    }
+
+    this.taichiPhysicsInitStarted = true;
+    try {
+      const module = await import("./TaichiHybridPhysics");
+      const physics = new module.TaichiHybridPhysics(128);
+      await physics.init();
+      this.taichiPhysics = physics;
+      this.physicsBackend = "taichi-hybrid";
+      this.pushMessage("Taichi 瀹炰緥鐗╃悊宸插惎鐢紝褰撳墠浣跨敤娣峰悎瑙ｇ畻銆?");
+      this.renderState();
+    } catch (error) {
+      console.error("Failed to initialize Taichi hybrid physics.", error);
+      this.physicsBackend = "cannon";
+      this.pushMessage("Taichi 鍚姩澶辫触锛屽凡鍥為€€鍒?Cannon 鐗╃悊銆?");
+      this.renderState();
+    }
   }
 
   private configureRenderer(): void {
@@ -1686,8 +1772,17 @@ export class CoinPusherApp {
 
     this.updateAutoDrop(delta);
     this.updatePusher(delta);
+    if (this.usingTaichiHybrid()) {
+      this.applyPendingTaichiAssist();
+    } else {
+      this.applyPusherAssist();
+    }
     this.stepPhysics(delta);
-    this.applyLowerDeckAssist();
+    if (this.usingTaichiHybrid()) {
+      this.queueTaichiAssistStep(delta);
+    } else {
+      this.applyLowerDeckAssist();
+    }
     this.syncMeshes();
     this.resolveCollections();
     this.processScheduledActions(now);
@@ -1752,7 +1847,180 @@ export class CoinPusherApp {
     );
     this.pusherMesh.position.set(0, y, z);
     this.pusherMesh.rotation.x = this.upperDeckTilt;
-    this.applyPusherAssist();
+  }
+
+  private usingTaichiHybrid(): boolean {
+    return this.physicsBackend === "taichi-hybrid" && this.taichiPhysics?.isReady() === true;
+  }
+
+  private applyPendingTaichiAssist(): void {
+    if (!this.taichiPendingResult) {
+      return;
+    }
+
+    const result = this.taichiPendingResult;
+    this.taichiPendingResult = null;
+
+    const velocityById = new Map<string, [number, number, number]>();
+    result.ids.forEach((id, index) => {
+      const velocity = result.velocities[index];
+      if (velocity) {
+        velocityById.set(id, velocity);
+      }
+    });
+
+    for (const item of this.items) {
+      if (item.collected) {
+        continue;
+      }
+
+      const assistedVelocity = velocityById.get(item.id);
+      if (!assistedVelocity) {
+        continue;
+      }
+
+      const nextVelocityX = clamp(lerpNumber(item.body.velocity.x, assistedVelocity[0], 0.72), -0.28, 0.28);
+      const nextVelocityZ = clamp(Math.max(item.body.velocity.z, assistedVelocity[2]), -0.12, 1.12);
+
+      if (
+        Math.abs(nextVelocityX - item.body.velocity.x) > 0.012 ||
+        Math.abs(nextVelocityZ - item.body.velocity.z) > 0.012
+      ) {
+        item.body.wakeUp();
+      }
+
+      item.body.velocity.x = nextVelocityX;
+      item.body.velocity.z = nextVelocityZ;
+    }
+  }
+
+  private queueTaichiAssistStep(deltaSeconds: number): void {
+    if (!this.usingTaichiHybrid() || !this.taichiPhysics || this.taichiPendingComputation) {
+      return;
+    }
+
+    const snapshot = this.buildTaichiAssistSnapshot();
+    if (snapshot.length === 0) {
+      this.taichiPendingResult = null;
+      return;
+    }
+
+    this.taichiPendingComputation = this.taichiPhysics
+      .step(snapshot, Math.max(deltaSeconds, 1 / 120))
+      .then((result) => {
+        if (this.physicsBackend === "taichi-hybrid") {
+          this.taichiPendingResult = result;
+        }
+      })
+      .catch((error: unknown) => {
+        console.error("Taichi hybrid step failed.", error);
+        if (this.physicsBackend === "taichi-hybrid") {
+          this.physicsBackend = "cannon";
+          this.taichiPhysics = null;
+          this.taichiPendingResult = null;
+          this.pushMessage("Taichi runtime failed. Falling back to Cannon physics.");
+          this.renderState();
+        }
+      })
+      .finally(() => {
+        this.taichiPendingComputation = null;
+      });
+  }
+
+  private buildTaichiAssistSnapshot(): TaichiAssistSnapshotItem[] {
+    const snapshot: TaichiAssistSnapshotItem[] = [];
+    const pusherBackZ = this.pusherBody.position.z - this.pusherDepth / 2 + 0.08;
+    const pusherFrontZ = this.pusherBody.position.z + this.pusherDepth / 2 - 0.08;
+    const pusherIsAdvancing = this.pusherBody.velocity.z > 0.18;
+
+    for (const item of this.items) {
+      if (item.collected) {
+        continue;
+      }
+
+      const { x, y, z } = item.body.position;
+      if (z < this.upperDeckBackZ - 0.2 || z > this.lowerDeckFrontZ + 0.12) {
+        continue;
+      }
+      if (Math.abs(x) > this.playfieldWidth / 2 + 0.28) {
+        continue;
+      }
+
+      const onUpperDeck = z <= this.upperDeckFrontZ + 0.16 && y <= this.getPusherSurfaceY(z) + 0.16;
+      const onLowerDeck =
+        z > this.upperDeckFrontZ + 0.16 &&
+        z < this.lowerDeckFrontZ - 0.08 &&
+        y <= this.getLowerDeckSurfaceY(z) + 0.18;
+
+      if (!onUpperDeck && !onLowerDeck) {
+        continue;
+      }
+
+      let desiredForward = 0;
+      let forwardBias = 0;
+
+      if (
+        pusherIsAdvancing &&
+        onUpperDeck &&
+        Math.abs(x) <= this.pusherWidth / 2 + 0.08 &&
+        z >= pusherBackZ &&
+        z <= pusherFrontZ
+      ) {
+        const velocityBoost = item.type === "chest" ? 0.82 : item.type === "rare" ? 0.92 : 1;
+        const targetVelocity = Math.min(0.9, Math.max(0.08, this.pusherBody.velocity.z * 0.055 * velocityBoost));
+        desiredForward = Math.max(desiredForward, targetVelocity);
+        forwardBias = Math.max(forwardBias, targetVelocity * 1.6);
+      }
+
+      if (onLowerDeck && Math.abs(x) <= this.playfieldWidth / 2 - 0.16) {
+        const targetVelocity = item.type === "chest" ? 0.055 : item.type === "rare" ? 0.07 : 0.09;
+        desiredForward = Math.max(desiredForward, targetVelocity);
+        forwardBias = Math.max(forwardBias, targetVelocity * 1.25);
+      }
+
+      if (onUpperDeck) {
+        desiredForward = Math.max(desiredForward, 0.018);
+        forwardBias = Math.max(forwardBias, 0.06);
+      }
+
+      snapshot.push({
+        id: item.id,
+        type: item.type,
+        position: [x, y, z],
+        velocity: [item.body.velocity.x, item.body.velocity.y, item.body.velocity.z],
+        radius: this.getAssistRadius(item.type),
+        desiredForward,
+        forwardBias,
+        lateralLimit: this.playfieldWidth / 2 - 0.12,
+        lateralDamping: this.getAssistLateralDamping(item.type),
+      });
+
+      if (snapshot.length >= 128) {
+        break;
+      }
+    }
+
+    return snapshot;
+  }
+
+  private getAssistRadius(type: DropItemType): number {
+    if (type === "chest") {
+      return 0.44;
+    }
+    if (type === "rare") {
+      return 0.38;
+    }
+    return 0.35;
+  }
+
+  private getAssistLateralDamping(type: DropItemType): number {
+    if (type === "chest") {
+      return 0.95;
+    }
+    if (type === "rare") {
+      return 0.94;
+    }
+    return 0.93;
   }
 
   private stepPhysics(deltaSeconds: number): void {
@@ -2033,6 +2301,63 @@ export class CoinPusherApp {
     this.lastFpsSampleTime = now;
   }
 
+  private getPhysicsStatusViewModel(): {
+    tone: "physics-status-taichi" | "physics-status-cannon" | "physics-status-fallback" | "physics-status-probing";
+    title: string;
+    detail: string;
+  } {
+    const requestedMode = this.getRequestedPhysicsMode();
+
+    if (this.physicsBackend === "taichi-hybrid" && this.taichiPhysics?.isReady()) {
+      return {
+        tone: "physics-status-taichi",
+        title: "Physics: Taichi Hybrid",
+        detail: "WebGPU active. Taichi assist is running.",
+      };
+    }
+
+    if (requestedMode === "cannon") {
+      return {
+        tone: "physics-status-cannon",
+        title: "Physics: Cannon",
+        detail: "Forced by query parameter.",
+      };
+    }
+
+    if (this.taichiAdapterAvailable === null && !this.taichiPhysicsInitStarted) {
+      return {
+        tone: "physics-status-probing",
+        title: "Physics: Probing WebGPU",
+        detail: "Checking whether Taichi can use this browser.",
+      };
+    }
+
+    if (this.taichiAdapterAvailable === false) {
+      return {
+        tone: requestedMode === "taichi" ? "physics-status-fallback" : "physics-status-cannon",
+        title: requestedMode === "taichi" ? "Physics: Cannon Fallback" : "Physics: Cannon",
+        detail:
+          requestedMode === "taichi"
+            ? "WebGPU adapter unavailable in this browser."
+            : "Taichi is unavailable, using Cannon.",
+      };
+    }
+
+    if (this.taichiPhysicsInitStarted && !this.taichiPhysics?.isReady()) {
+      return {
+        tone: "physics-status-probing",
+        title: "Physics: Initializing Taichi",
+        detail: "WebGPU adapter found. Compiling Taichi kernels.",
+      };
+    }
+
+    return {
+      tone: "physics-status-fallback",
+      title: "Physics: Cannon Fallback",
+      detail: "Taichi probe passed, but runtime fell back to Cannon.",
+    };
+  }
+
   private renderState(): void {
     this.updateAnimatedResources();
 
@@ -2050,6 +2375,17 @@ export class CoinPusherApp {
     this.ui.feverPill.classList.toggle("hidden", this.state.feverTimeLeft <= 0);
     if (this.state.feverTimeLeft > 0) {
       this.ui.feverPill.textContent = `FEVER x2 ${this.state.feverTimeLeft.toFixed(1)}s`;
+    }
+
+    const physicsStatus = this.getPhysicsStatusViewModel();
+    this.ui.physicsStatus.className = `physics-status ${physicsStatus.tone}`;
+    const physicsTitle = this.ui.physicsStatus.querySelector<HTMLElement>(".physics-status-title");
+    const physicsDetail = this.ui.physicsStatus.querySelector<HTMLElement>(".physics-status-detail");
+    if (physicsTitle) {
+      physicsTitle.textContent = physicsStatus.title;
+    }
+    if (physicsDetail) {
+      physicsDetail.textContent = physicsStatus.detail;
     }
 
     this.renderTasks();
@@ -2257,6 +2593,7 @@ export class CoinPusherApp {
     this.lastCoins = this.state.coins;
     this.lastDiamonds = this.state.diamonds;
     this.lastFragments = this.state.fragments;
+    this.taichiPendingResult = null;
     this.seedBoard();
     this.pushMessage("新会话开始。");
     this.renderState();
@@ -2358,6 +2695,10 @@ export class CoinPusherApp {
 
   public getDebugState(): Record<string, unknown> {
     return {
+      physicsBackend: this.physicsBackend,
+      taichiReady: this.taichiPhysics?.isReady() ?? false,
+      taichiAdapterAvailable: this.taichiAdapterAvailable,
+      taichiPending: this.taichiPendingComputation !== null,
       coins: this.state.coins,
       displayedCoins: this.displayedCoins,
       activeItems: this.items.length,
