@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import * as CANNON from "cannon-es";
+import type { PhysicsBody } from "./physics/RapierWorld";
 
 export type DropItemType = "coin" | "chest" | "rare";
 export type BonusType = "coinRain" | "fever" | "chestDrop";
@@ -59,7 +59,7 @@ export interface RuntimeState {
 export interface DropItem {
   id: string;
   type: DropItemType;
-  body: CANNON.Body;
+  body: PhysicsBody;
   mesh: THREE.Object3D;
   baseReward: number;
   spawnTime: number;

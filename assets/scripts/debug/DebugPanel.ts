@@ -62,6 +62,22 @@ export class DebugPanel extends Component {
         director.debug.forceBonus("manual-debug");
         this.logSnapshot("Forced a bonus trigger.");
         break;
+      case KeyCode.KEY_M:
+        this.toggleAutoDrop();
+        break;
+      case KeyCode.KEY_C:
+        this.purchaseUpgrade("coinValue", "Purchased coin value upgrade.");
+        break;
+      case KeyCode.KEY_P:
+        this.purchaseUpgrade("pusher", "Purchased pusher upgrade.");
+        break;
+      case KeyCode.KEY_O:
+        this.purchaseUpgrade("autoDrop", "Purchased auto-drop upgrade.");
+        break;
+      case KeyCode.KEY_L:
+        director.debug.resetOverrides();
+        this.logSnapshot("Reset debug overrides.");
+        break;
       case KeyCode.KEY_R:
         director.debug.resetSession();
         this.logSnapshot("Session reset requested.");
@@ -117,6 +133,33 @@ export class DebugPanel extends Component {
     const nextValue = director.overrides.getState().coinValueScale + delta;
     director.debug.setCoinValueScale(nextValue);
     this.logSnapshot(`Adjusted coin value scale to ${nextValue.toFixed(2)}.`);
+  }
+
+  private toggleAutoDrop(): void {
+    const director = GameDirector.instance;
+    if (!director) {
+      return;
+    }
+
+    const enabled = director.toggleAutoDrop();
+    this.logSnapshot(enabled ? "Enabled auto-drop." : "Disabled auto-drop.");
+  }
+
+  private purchaseUpgrade(
+    kind: "coinValue" | "pusher" | "autoDrop",
+    successMessage: string,
+  ): void {
+    const director = GameDirector.instance;
+    if (!director) {
+      return;
+    }
+
+    if (!director.purchaseUpgrade(kind)) {
+      this.logSnapshot(`Upgrade failed: ${kind}.`);
+      return;
+    }
+
+    this.logSnapshot(successMessage);
   }
 
   private logSnapshot(prefix: string): void {

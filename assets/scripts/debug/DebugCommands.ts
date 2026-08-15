@@ -1,6 +1,6 @@
 import { ConfigService } from "../config/ConfigService";
 import { EventBus } from "../core/EventBus";
-import { GameEvents } from "../core/GameEvents";
+import { GameEventPayloadMap, GameEvents } from "../core/GameEvents";
 import { RuntimeStateStore } from "../data/RuntimeStateStore";
 import { SessionProgressService } from "../systems/session/SessionProgressService";
 import { DebugOverrideStore } from "./DebugOverrideStore";
@@ -13,7 +13,7 @@ export class DebugCommands {
     private readonly stateStore: RuntimeStateStore,
     private readonly sessionProgress: SessionProgressService,
     private readonly debugOverrides: DebugOverrideStore,
-    private readonly eventBus: EventBus,
+    private readonly eventBus: EventBus<GameEventPayloadMap>,
   ) {}
 
   public addCoin(amount = 100): number {
@@ -59,6 +59,10 @@ export class DebugCommands {
   public resetOverrides(): void {
     this.debugOverrides.reset();
     this.sessionProgress.setCurrentPresetId(this.configService.getConfig().debug.defaultPresetId);
+  }
+
+  public toggleAutoDrop(): boolean {
+    return this.sessionProgress.toggleAutoDrop();
   }
 
   public forceBonus(bonusId = "debug-bonus"): void {

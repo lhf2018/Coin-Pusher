@@ -9,4 +9,7 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 4173,
   },
+  optimizeDeps: {
+    exclude: ["@dimforge/rapier3d-compat"],
+  },
 });

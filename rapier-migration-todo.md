@@ -34,19 +34,19 @@ Decision for now:
 
 ## TODO
 
-- [ ] Add `@dimforge/rapier3d` and create a small physics adapter layer so the app is not tied directly to one engine.
-- [ ] Replace `CANNON.World` bootstrap with a `Rapier` world bootstrap.
-- [ ] Convert static machine geometry into `Rapier` fixed rigid bodies and colliders.
-- [ ] Convert the pusher into a `Rapier` kinematic body with an explicit motion update path.
-- [ ] Convert coin, chest, and rare item bodies into `Rapier` dynamic rigid bodies and colliders.
-- [ ] Re-implement mesh-to-physics synchronization on top of `Rapier` handles.
-- [ ] Re-implement cleanup, collection detection, and body removal on top of `Rapier`.
-- [ ] Recreate damping, gravity, sleep, and wake-up behavior with `Rapier` equivalents.
-- [ ] Enable CCD for fast drops or edge cases where items can tunnel through thin geometry.
-- [ ] Tune friction, restitution, mass, and damping for coins, chests, pusher, and deck surfaces.
+- [x] Add `@dimforge/rapier3d-compat` and create a small physics adapter layer so the app is not tied directly to one engine.
+- [x] Replace `CANNON.World` bootstrap with a `Rapier` world bootstrap.
+- [x] Convert static machine geometry into `Rapier` fixed rigid bodies and colliders.
+- [x] Convert the pusher into a `Rapier` kinematic body with an explicit motion update path.
+- [x] Convert coin, chest, and rare item bodies into `Rapier` dynamic rigid bodies and colliders.
+- [x] Re-implement mesh-to-physics synchronization on top of `Rapier` handles.
+- [x] Re-implement cleanup, collection detection, and body removal on top of `Rapier`.
+- [x] Recreate damping, gravity, sleep, and wake-up behavior with `Rapier` equivalents.
+- [x] Enable CCD for fast drops or edge cases where items can tunnel through thin geometry.
+- [x] Tune friction, restitution, mass, and damping for coins, chests, pusher, and deck surfaces.
 - [ ] Verify that coins do not fall behind the pusher or pass through side walls and payout structures.
-- [ ] Add a visible runtime status label so the page clearly shows which physics backend is active.
-- [ ] Keep a fallback path until the `Rapier` version is stable enough to replace the current default.
+- [x] Add a visible runtime status label so the page clearly shows which physics backend is active.
+- [x] Make Rapier the default runtime. Keep Taichi assist behind `?physics=taichi`. Cannon is no longer used at runtime.
 
 ## Suggested Phases
 

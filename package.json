@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.20.0",
     "cannon-es": "^0.20.0",
     "taichi.js": "^0.0.36",
     "three": "^0.179.1"

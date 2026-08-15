@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import * as CANNON from "cannon-es";
 import {
   BASE_CONFIG,
   DEBUG_LIMITS,
@@ -25,6 +24,7 @@ import type {
   TaichiAssistSnapshotItem,
   TaichiHybridPhysics,
 } from "./TaichiHybridPhysics";
+import { PhysicsBody, RapierPhysicsWorld, Vec3 } from "./physics/RapierWorld";
 
 const BONUS_ROTATION: BonusType[] = ["coinRain", "fever", "chestDrop"];
 
@@ -54,21 +54,23 @@ function lerpNumber(current: number, target: number, factor: number): number {
   return current + (target - current) * factor;
 }
 
+function vec3(x: number, y: number, z: number): Vec3 {
+  return { x, y, z };
+}
+
 export class CoinPusherApp {
   private readonly ui: UIRefs;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(56, 1, 0.1, 120);
   private readonly renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  private readonly world = new CANNON.World();
+  private readonly physics = new RapierPhysicsWorld();
   private readonly clock = new THREE.Clock();
 
   private state: RuntimeState = createInitialState();
   private debugOverrides: DebugOverrides = { ...DEFAULT_DEBUG_OVERRIDES };
   private readonly items: DropItem[] = [];
-  private readonly cleanupBodies: CANNON.Body[] = [];
+  private readonly cleanupBodies: PhysicsBody[] = [];
   private readonly scheduledActions: ScheduledAction[] = [];
-  private readonly floorMaterial = new CANNON.Material("floor");
-  private readonly itemMaterial = new CANNON.Material("item");
   private readonly playfieldWidth = TABLE.width - 0.9;
   private readonly upperDeckDepth = 4.35;
   private readonly upperDeckThickness = 0.18;
@@ -111,24 +113,22 @@ export class CoinPusherApp {
   private lastFragments = this.state.fragments;
 
   private pusherMesh!: THREE.Group;
-  private pusherBody!: CANNON.Body;
+  private pusherBody!: PhysicsBody;
   private debugPanelBuilt = false;
-  private physicsBackend: "cannon" | "taichi-hybrid" = "cannon";
+  private physicsReady = false;
+  private physicsBackend: "rapier" | "taichi-hybrid" | "probing" | "failed" = "probing";
   private taichiPhysics: TaichiHybridPhysics | null = null;
   private taichiPhysicsInitStarted = false;
   private taichiAdapterAvailable: boolean | null = null;
   private taichiPendingComputation: Promise<void> | null = null;
   private taichiPendingResult: TaichiAssistResult | null = null;
+  private lastViewportWidth = 0;
+  private lastViewportHeight = 0;
 
   public constructor(root: HTMLDivElement) {
     this.ui = createUI(root);
     this.configureRenderer();
     this.configureScene();
-    this.configurePhysics();
-    this.createTable();
-    this.createPusher();
-    this.createDecor();
-    this.seedBoard();
     this.buildDebugPresetBar();
     this.bindControls();
     this.buildDebugPanel();
@@ -153,27 +153,53 @@ export class CoinPusherApp {
   }
 
   public start(): void {
+    requestAnimationFrame(this.loop);
+    void this.bootstrapPhysics();
+  }
+
+  private async bootstrapPhysics(): Promise<void> {
+    this.physicsBackend = "probing";
+    this.renderState();
+
+    try {
+      await this.physics.init();
+      this.physicsReady = true;
+      this.createTable();
+      this.createPusher();
+      this.createDecor();
+      this.seedBoard();
+      this.physicsBackend = "rapier";
+      this.pushMessage("Rapier 物理已启用。");
+      this.renderState();
+    } catch (error) {
+      console.error("Failed to initialize Rapier physics.", error);
+      this.physicsBackend = "failed";
+      this.physicsReady = false;
+      this.pushMessage("Rapier 启动失败，物理模拟未启用。");
+      this.renderState();
+      return;
+    }
+
     void this.initializeExperimentalPhysics();
     this.scheduleAction(300, () => {
       this.pushMessage("机台准备完成。按 Space 或点击投币开始。");
     });
-    this.loop();
   }
 
-  private getRequestedPhysicsMode(): "auto" | "taichi" | "cannon" {
+  private getRequestedPhysicsMode(): "taichi" | "rapier" | "cannon" {
     if (typeof window === "undefined") {
-      return "cannon";
+      return "rapier";
     }
 
     const params = new URLSearchParams(window.location.search);
     const requested = params.get("physics");
-    if (requested === "cannon") {
-      return "cannon";
-    }
     if (requested === "taichi") {
       return "taichi";
     }
-    return "auto";
+    if (requested === "cannon") {
+      return "cannon";
+    }
+    return "rapier";
   }
 
   private async hasUsableWebGpuAdapter(): Promise<boolean> {
@@ -204,14 +230,14 @@ export class CoinPusherApp {
     }
 
     const requestedMode = this.getRequestedPhysicsMode();
-    if (requestedMode === "cannon") {
+    if (requestedMode !== "taichi") {
       this.taichiAdapterAvailable = false;
       return;
     }
 
     if (!(await this.hasUsableWebGpuAdapter())) {
       if (requestedMode === "taichi") {
-        this.pushMessage("WebGPU adapter unavailable. Falling back to Cannon physics.");
+        this.pushMessage("WebGPU 不可用，已保持纯 Rapier 物理。");
         this.renderState();
       }
       return;
@@ -224,19 +250,18 @@ export class CoinPusherApp {
       await physics.init();
       this.taichiPhysics = physics;
       this.physicsBackend = "taichi-hybrid";
-      this.pushMessage("Taichi 瀹炰緥鐗╃悊宸插惎鐢紝褰撳墠浣跨敤娣峰悎瑙ｇ畻銆?");
+      this.pushMessage("Rapier 已启用，并叠加 Taichi 辅助求解。");
       this.renderState();
     } catch (error) {
       console.error("Failed to initialize Taichi hybrid physics.", error);
-      this.physicsBackend = "cannon";
-      this.pushMessage("Taichi 鍚姩澶辫触锛屽凡鍥為€€鍒?Cannon 鐗╃悊銆?");
+      this.physicsBackend = "rapier";
+      this.pushMessage("Taichi 启动失败，已回退到纯 Rapier 物理。");
       this.renderState();
     }
   }
 
   private configureRenderer(): void {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setSize(this.ui.viewport.clientWidth || 960, this.ui.viewport.clientHeight || 640);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -246,7 +271,17 @@ export class CoinPusherApp {
     this.camera.position.set(0, 5.95, 11.9);
     this.camera.lookAt(0, 0.18, 2.85);
 
+    this.handleResize();
     window.addEventListener("resize", this.handleResize);
+    requestAnimationFrame(() => {
+      this.handleResize();
+      requestAnimationFrame(this.handleResize);
+    });
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => this.handleResize());
+      observer.observe(this.ui.viewport);
+    }
   }
 
   private configureScene(): void {
@@ -279,39 +314,13 @@ export class CoinPusherApp {
     frontFill.position.set(0, 1.6, 7.8);
     this.scene.add(frontFill);
 
-    const payoutGlow = new THREE.PointLight("#57d6ff", 24, 10, 2);
-    payoutGlow.position.set(0, -0.1, this.collectionCenterZ + 0.22);
+    const payoutGlow = new THREE.PointLight("#57d6ff", 12, 8, 2.2);
+    payoutGlow.position.set(0, -0.18, this.collectionCenterZ + 0.22);
     this.scene.add(payoutGlow);
 
-    const payoutWarm = new THREE.PointLight("#ffd49a", 16, 8, 2);
-    payoutWarm.position.set(0, -0.02, this.collectionCenterZ - 0.02);
+    const payoutWarm = new THREE.PointLight("#ffd49a", 8, 6.5, 2.2);
+    payoutWarm.position.set(0, -0.12, this.collectionCenterZ - 0.02);
     this.scene.add(payoutWarm);
-  }
-
-  private configurePhysics(): void {
-    this.world.gravity.set(0, -14.6, 0);
-    this.world.broadphase = new CANNON.SAPBroadphase(this.world);
-    this.world.allowSleep = true;
-    const solver = this.world.solver as CANNON.GSSolver;
-    solver.iterations = 16;
-    solver.tolerance = 0.001;
-
-    this.world.defaultContactMaterial.friction = 0.4;
-    this.world.defaultContactMaterial.restitution = 0.01;
-    this.world.defaultContactMaterial.contactEquationRelaxation = 4;
-    this.world.defaultContactMaterial.contactEquationStiffness = 1e8;
-    this.world.addContactMaterial(
-      new CANNON.ContactMaterial(this.floorMaterial, this.itemMaterial, {
-        friction: 0.5,
-        restitution: 0.005,
-      }),
-    );
-    this.world.addContactMaterial(
-      new CANNON.ContactMaterial(this.itemMaterial, this.itemMaterial, {
-        friction: 0.32,
-        restitution: 0.01,
-      }),
-    );
   }
 
   private createTable(): void {
@@ -403,13 +412,13 @@ export class CoinPusherApp {
     this.scene.add(lowerDecal);
 
     this.addStaticBody(
-      new CANNON.Vec3(this.playfieldWidth / 2, this.upperDeckThickness / 2, this.upperDeckDepth / 2),
-      new CANNON.Vec3(0, this.upperDeckY, this.upperDeckCenterZ),
+      vec3(this.playfieldWidth / 2, this.upperDeckThickness / 2, this.upperDeckDepth / 2),
+      vec3(0, this.upperDeckY, this.upperDeckCenterZ),
       this.upperDeckTilt,
     );
     this.addStaticBody(
-      new CANNON.Vec3(this.playfieldWidth / 2, this.lowerDeckThickness / 2, this.lowerDeckDepth / 2),
-      new CANNON.Vec3(0, this.lowerDeckY, this.lowerDeckCenterZ),
+      vec3(this.playfieldWidth / 2, this.lowerDeckThickness / 2, this.lowerDeckDepth / 2),
+      vec3(0, this.lowerDeckY, this.lowerDeckCenterZ),
       this.lowerDeckTilt,
     );
 
@@ -480,8 +489,8 @@ export class CoinPusherApp {
         this.scene.add(rail);
 
         this.addStaticBody(
-          new CANNON.Vec3(0.1, 0.51, section.depth / 2 + 0.04),
-          new CANNON.Vec3(
+          vec3(0.1, 0.51, section.depth / 2 + 0.04),
+          vec3(
             direction * (this.playfieldWidth / 2 + 0.1),
             section.baseY + 0.42,
             section.centerZ,
@@ -534,8 +543,8 @@ export class CoinPusherApp {
       rearGuide.receiveShadow = true;
       this.scene.add(rearGuide);
       this.addStaticBody(
-        new CANNON.Vec3(0.17, 0.21, 0.21),
-        new CANNON.Vec3(
+        vec3(0.17, 0.21, 0.21),
+        vec3(
           direction * (this.playfieldWidth / 2 - 0.28),
           this.getUpperDeckSurfaceY(this.upperDeckBackZ + 0.08) + 0.18,
           this.upperDeckBackZ + 0.08,
@@ -558,21 +567,39 @@ export class CoinPusherApp {
     backWall.receiveShadow = true;
     this.scene.add(backWall);
     this.addStaticBody(
-      new CANNON.Vec3((this.playfieldWidth + 0.55) / 2, 1.8, 0.14),
-      new CANNON.Vec3(0, 1.74, this.upperDeckBackZ - 0.58),
+      vec3((this.playfieldWidth + 0.55) / 2, 1.8, 0.14),
+      vec3(0, 1.74, this.upperDeckBackZ - 0.58),
     );
 
-    const payoutGuide = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.playfieldWidth - 0.18, 0.18),
-      new THREE.MeshBasicMaterial({
-        color: "#d2e1eb",
-        transparent: true,
-        opacity: 0.4,
+    const deckFrontY = this.getLowerDeckSurfaceY(this.lowerDeckFrontZ);
+    const cliffEdge = new THREE.Mesh(
+      new THREE.BoxGeometry(this.playfieldWidth - 0.12, 0.12, 0.18),
+      new THREE.MeshPhysicalMaterial({
+        color: "#c5d7e4",
+        emissive: "#2f4a5d",
+        metalness: 0.78,
+        roughness: 0.22,
+        clearcoat: 0.28,
+        clearcoatRoughness: 0.2,
       }),
     );
-    payoutGuide.position.set(0, this.getLowerDeckSurfaceY(this.lowerDeckFrontZ) + 0.008, this.lowerDeckFrontZ - 0.02);
-    payoutGuide.rotation.x = -Math.PI / 2 + this.lowerDeckTilt;
-    this.scene.add(payoutGuide);
+    cliffEdge.position.set(0, deckFrontY - 0.02, this.lowerDeckFrontZ + 0.04);
+    cliffEdge.rotation.x = this.lowerDeckTilt;
+    cliffEdge.castShadow = true;
+    cliffEdge.receiveShadow = true;
+    this.scene.add(cliffEdge);
+
+    const cliffShadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(this.playfieldWidth - 0.2, 0.42),
+      new THREE.MeshBasicMaterial({
+        color: "#02060c",
+        transparent: true,
+        opacity: 0.72,
+      }),
+    );
+    cliffShadow.position.set(0, deckFrontY - 0.18, this.lowerDeckFrontZ + 0.28);
+    cliffShadow.rotation.x = -Math.PI / 2 + 0.18;
+    this.scene.add(cliffShadow);
 
     const sideDrainMaterial = new THREE.MeshBasicMaterial({
       color: "#081828",
@@ -594,10 +621,10 @@ export class CoinPusherApp {
     }
 
     const collectionWallMaterial = new THREE.MeshStandardMaterial({
-      color: "#8cb3c9",
-      emissive: "#2f5b75",
-      metalness: 0.78,
-      roughness: 0.14,
+      color: "#6f93ab",
+      emissive: "#1d3648",
+      metalness: 0.72,
+      roughness: 0.28,
     });
     const collectionPitCenterZ = this.getCollectionPitCenterZ();
     const collectionPitDepth = this.getCollectionPitDepth();
@@ -606,10 +633,10 @@ export class CoinPusherApp {
     const collectionFloor = new THREE.Mesh(
       new THREE.BoxGeometry(this.playfieldWidth - 0.18, 0.08, collectionPitDepth + 0.08),
       new THREE.MeshStandardMaterial({
-        color: "#234760",
-        emissive: "#102436",
-        metalness: 0.24,
-        roughness: 0.72,
+        color: "#050b12",
+        emissive: "#020508",
+        metalness: 0.08,
+        roughness: 0.96,
       }),
     );
     collectionFloor.position.set(0, collectionPitFloorY, collectionPitCenterZ + 0.04);
@@ -617,8 +644,8 @@ export class CoinPusherApp {
     collectionFloor.receiveShadow = true;
     this.scene.add(collectionFloor);
     this.addStaticBody(
-      new CANNON.Vec3((this.playfieldWidth - 0.18) / 2, 0.04, (collectionPitDepth + 0.08) / 2),
-      new CANNON.Vec3(0, collectionPitFloorY, collectionPitCenterZ + 0.04),
+      vec3((this.playfieldWidth - 0.18) / 2, 0.04, (collectionPitDepth + 0.08) / 2),
+      vec3(0, collectionPitFloorY, collectionPitCenterZ + 0.04),
       0.04,
     );
     const dividerDepth = collectionPitDepth + 0.08;
@@ -638,35 +665,40 @@ export class CoinPusherApp {
       mesh.receiveShadow = true;
       this.scene.add(mesh);
       this.addStaticBody(
-        new CANNON.Vec3(sx / 2, sy / 2, sz / 2),
-        new CANNON.Vec3(px, py, pz),
+        vec3(sx / 2, sy / 2, sz / 2),
+        vec3(px, py, pz),
       );
     }
 
     const collectionBackKick = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth - 0.16, 0.28, 0.12),
-      collectionWallMaterial,
+      new THREE.BoxGeometry(this.playfieldWidth - 0.16, 0.42, 0.14),
+      new THREE.MeshStandardMaterial({
+        color: "#152838",
+        emissive: "#0a1520",
+        metalness: 0.34,
+        roughness: 0.7,
+      }),
     );
-    collectionBackKick.position.set(0, collectionPitFloorY + 0.14, collectionPitCenterZ - collectionPitDepth / 2 - 0.03);
+    collectionBackKick.position.set(0, collectionPitFloorY + 0.2, collectionPitCenterZ - collectionPitDepth / 2 - 0.05);
     collectionBackKick.castShadow = true;
     collectionBackKick.receiveShadow = true;
     this.scene.add(collectionBackKick);
     this.addStaticBody(
-      new CANNON.Vec3((this.playfieldWidth - 0.16) / 2, 0.14, 0.06),
-      new CANNON.Vec3(0, collectionPitFloorY + 0.14, collectionPitCenterZ - collectionPitDepth / 2 - 0.03),
+      vec3((this.playfieldWidth - 0.16) / 2, 0.21, 0.07),
+      vec3(0, collectionPitFloorY + 0.2, collectionPitCenterZ - collectionPitDepth / 2 - 0.05),
     );
 
     const collectionFrontLip = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth - 0.16, 0.24, 0.16),
+      new THREE.BoxGeometry(this.playfieldWidth - 0.16, 0.36, 0.18),
       collectionWallMaterial,
     );
-    collectionFrontLip.position.set(0, collectionPitFloorY + 0.12, collectionPitCenterZ + collectionPitDepth / 2 + 0.08);
+    collectionFrontLip.position.set(0, collectionPitFloorY + 0.16, collectionPitCenterZ + collectionPitDepth / 2 + 0.1);
     collectionFrontLip.castShadow = true;
     collectionFrontLip.receiveShadow = true;
     this.scene.add(collectionFrontLip);
     this.addStaticBody(
-      new CANNON.Vec3((this.playfieldWidth - 0.16) / 2, 0.12, 0.08),
-      new CANNON.Vec3(0, collectionPitFloorY + 0.12, collectionPitCenterZ + collectionPitDepth / 2 + 0.08),
+      vec3((this.playfieldWidth - 0.16) / 2, 0.18, 0.09),
+      vec3(0, collectionPitFloorY + 0.16, collectionPitCenterZ + collectionPitDepth / 2 + 0.1),
     );
 
     this.createSlotFrame(-3.05, 2.82, "宝箱区", "#ffbe5a");
@@ -747,24 +779,23 @@ export class CoinPusherApp {
     this.pusherMesh.rotation.x = this.upperDeckTilt;
     this.scene.add(this.pusherMesh);
 
-    this.pusherBody = new CANNON.Body({
-      type: CANNON.Body.KINEMATIC,
-      position: new CANNON.Vec3(
+    this.pusherBody = this.physics.createKinematicBody(
+      vec3(
         0,
         this.getPusherBaseY(this.pusherStartZ) + this.pusherBodyHalfHeight,
         this.pusherStartZ,
       ),
-      material: this.floorMaterial,
-    });
-    this.pusherBody.addShape(
-      new CANNON.Box(new CANNON.Vec3(this.pusherWidth / 2, this.pusherBodyHalfHeight, this.pusherDepth / 2)),
+      this.upperDeckTilt,
+      [
+        {
+          halfExtents: vec3(this.pusherWidth / 2, this.pusherBodyHalfHeight, this.pusherDepth / 2),
+        },
+        {
+          halfExtents: vec3(pusherWallWidth / 2, pusherWallHeight / 2, pusherWallDepth / 2),
+          offset: vec3(0, pusherWallOffsetY, pusherWallOffsetZ),
+        },
+      ],
     );
-    this.pusherBody.addShape(
-      new CANNON.Box(new CANNON.Vec3(pusherWallWidth / 2, pusherWallHeight / 2, pusherWallDepth / 2)),
-      new CANNON.Vec3(0, pusherWallOffsetY, pusherWallOffsetZ),
-    );
-    this.pusherBody.quaternion.setFromEuler(this.upperDeckTilt, 0, 0);
-    this.world.addBody(this.pusherBody);
   }
 
   private createDecor(): void {
@@ -858,8 +889,8 @@ export class CoinPusherApp {
     tunnelRoof.receiveShadow = true;
     this.scene.add(tunnelRoof);
     this.addStaticBody(
-      new CANNON.Vec3((this.pusherWidth + 0.36) / 2, 0.09, 0.6),
-      new CANNON.Vec3(0, chamberBaseY + 1.1, this.upperDeckBackZ - 0.02),
+      vec3((this.pusherWidth + 0.36) / 2, 0.09, 0.6),
+      vec3(0, chamberBaseY + 1.1, this.upperDeckBackZ - 0.02),
       this.upperDeckTilt,
     );
 
@@ -875,8 +906,8 @@ export class CoinPusherApp {
       tunnelSide.receiveShadow = true;
       this.scene.add(tunnelSide);
       this.addStaticBody(
-        new CANNON.Vec3(0.1, 0.48, 0.62),
-        new CANNON.Vec3(
+        vec3(0.1, 0.48, 0.62),
+        vec3(
           direction * (this.pusherWidth / 2 + 0.1),
           chamberBaseY + 0.6,
           this.upperDeckBackZ - 0.02,
@@ -1138,90 +1169,106 @@ export class CoinPusherApp {
 
   private createSlotFrame(x: number, width: number, label: string, color: string): void {
     const mouthDepth = this.getCollectionPitDepth() - 0.08;
-    const mouthWidth = width - 0.22;
-    const pitDepth = mouthDepth - 0.14;
+    const mouthWidth = width - 0.18;
+    const pitDepth = mouthDepth - 0.1;
     const pitFloorY = this.getCollectionPitFloorY();
     const mouthCenterZ = this.getCollectionPitCenterZ() + 0.02;
-    const rimY = this.collectionFloorY + 0.2;
+    const mouthY = this.getLowerDeckSurfaceY(this.lowerDeckFrontZ) - 0.08;
+    const cavityHeight = mouthY - pitFloorY;
 
-    const rimMaterial = new THREE.MeshStandardMaterial({
-      color: "#7eacc6",
-      emissive: "#32566a",
-      metalness: 0.82,
-      roughness: 0.16,
+    const rimMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#d4e4ef",
+      emissive: "#355066",
+      metalness: 0.86,
+      roughness: 0.18,
+      clearcoat: 0.35,
+      clearcoatRoughness: 0.22,
+    });
+    const accentRimMaterial = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.35,
+      metalness: 0.55,
+      roughness: 0.28,
     });
     const pitWallMaterial = new THREE.MeshStandardMaterial({
-      color: "#13283a",
-      emissive: "#0a1b27",
-      metalness: 0.26,
-      roughness: 0.72,
+      color: "#071018",
+      emissive: "#03070c",
+      metalness: 0.12,
+      roughness: 0.92,
     });
     const pitFloorMaterial = new THREE.MeshStandardMaterial({
-      color: "#102132",
-      emissive: "#08111a",
-      metalness: 0.18,
-      roughness: 0.88,
+      color: "#02060b",
+      emissive: "#010305",
+      metalness: 0.05,
+      roughness: 0.98,
     });
 
-    const rearRim = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth, 0.08, 0.1),
-      rimMaterial,
-    );
-    rearRim.position.set(x, rimY, mouthCenterZ - mouthDepth / 2 + 0.04);
+    const rearRim = new THREE.Mesh(new THREE.BoxGeometry(mouthWidth + 0.08, 0.1, 0.14), rimMaterial);
+    rearRim.position.set(x, mouthY + 0.02, mouthCenterZ - mouthDepth / 2 + 0.02);
     rearRim.castShadow = true;
     rearRim.receiveShadow = true;
     this.scene.add(rearRim);
 
     for (const direction of [-1, 1] as const) {
-      const sideRim = new THREE.Mesh(
-        new THREE.BoxGeometry(0.1, 0.08, mouthDepth),
-        rimMaterial,
-      );
-      sideRim.position.set(
-        x + direction * (mouthWidth / 2 - 0.03),
-        rimY,
-        mouthCenterZ,
-      );
+      const sideRim = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, mouthDepth + 0.04), rimMaterial);
+      sideRim.position.set(x + direction * (mouthWidth / 2), mouthY + 0.02, mouthCenterZ);
       sideRim.castShadow = true;
       sideRim.receiveShadow = true;
       this.scene.add(sideRim);
     }
 
-    const frontRim = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth, 0.08, 0.1),
-      rimMaterial,
-    );
-    frontRim.position.set(x, rimY, mouthCenterZ + mouthDepth / 2 - 0.04);
+    const frontRim = new THREE.Mesh(new THREE.BoxGeometry(mouthWidth + 0.08, 0.12, 0.16), rimMaterial);
+    frontRim.position.set(x, mouthY + 0.01, mouthCenterZ + mouthDepth / 2 - 0.02);
     frontRim.castShadow = true;
     frontRim.receiveShadow = true;
     this.scene.add(frontRim);
 
+    const accentStrip = new THREE.Mesh(
+      new THREE.BoxGeometry(mouthWidth - 0.2, 0.04, 0.05),
+      accentRimMaterial,
+    );
+    accentStrip.position.set(x, mouthY + 0.05, mouthCenterZ + mouthDepth / 2 + 0.02);
+    this.scene.add(accentStrip);
+
+    const openMouth = new THREE.Mesh(
+      new THREE.PlaneGeometry(mouthWidth - 0.28, mouthDepth - 0.28),
+      new THREE.MeshBasicMaterial({
+        color: "#000000",
+        transparent: true,
+        opacity: 0.94,
+      }),
+    );
+    openMouth.position.set(x, mouthY - 0.01, mouthCenterZ + 0.02);
+    openMouth.rotation.x = -Math.PI / 2;
+    this.scene.add(openMouth);
+
     const pitFloor = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth - 0.14, 0.05, pitDepth),
+      new THREE.BoxGeometry(mouthWidth - 0.3, 0.05, pitDepth - 0.18),
       pitFloorMaterial,
     );
-    pitFloor.position.set(x, pitFloorY + 0.026, mouthCenterZ + 0.04);
-    pitFloor.rotation.x = 0.04;
+    pitFloor.position.set(x, pitFloorY + 0.03, mouthCenterZ + 0.05);
+    pitFloor.rotation.x = 0.05;
     pitFloor.receiveShadow = true;
     this.scene.add(pitFloor);
 
     const backWall = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth - 0.12, 0.32, 0.06),
+      new THREE.BoxGeometry(mouthWidth - 0.28, cavityHeight * 0.9, 0.08),
       pitWallMaterial,
     );
-    backWall.position.set(x, pitFloorY + 0.14, mouthCenterZ - pitDepth / 2 + 0.07);
+    backWall.position.set(x, pitFloorY + cavityHeight * 0.45, mouthCenterZ - pitDepth / 2 + 0.1);
     backWall.castShadow = true;
     backWall.receiveShadow = true;
     this.scene.add(backWall);
 
     for (const direction of [-1, 1] as const) {
       const sideWall = new THREE.Mesh(
-        new THREE.BoxGeometry(0.06, 0.34, pitDepth),
+        new THREE.BoxGeometry(0.08, cavityHeight * 0.9, pitDepth - 0.16),
         pitWallMaterial,
       );
       sideWall.position.set(
-        x + direction * ((mouthWidth - 0.12) / 2 - 0.03),
-        pitFloorY + 0.15,
+        x + direction * ((mouthWidth - 0.34) / 2),
+        pitFloorY + cavityHeight * 0.45,
         mouthCenterZ + 0.04,
       );
       sideWall.castShadow = true;
@@ -1229,69 +1276,68 @@ export class CoinPusherApp {
       this.scene.add(sideWall);
     }
 
-    const frontWall = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth - 0.12, 0.34, 0.06),
+    const frontInner = new THREE.Mesh(
+      new THREE.BoxGeometry(mouthWidth - 0.28, cavityHeight * 0.62, 0.08),
       pitWallMaterial,
     );
-    frontWall.position.set(x, pitFloorY + 0.15, mouthCenterZ + pitDepth / 2 + 0.01);
-    frontWall.castShadow = true;
-    frontWall.receiveShadow = true;
-    this.scene.add(frontWall);
+    frontInner.position.set(x, pitFloorY + cavityHeight * 0.34, mouthCenterZ + pitDepth / 2 - 0.02);
+    frontInner.castShadow = true;
+    frontInner.receiveShadow = true;
+    this.scene.add(frontInner);
 
-    const frontGlow = new THREE.Mesh(
-      new THREE.PlaneGeometry(mouthWidth - 0.26, 0.24),
+    const depthShade = new THREE.Mesh(
+      new THREE.PlaneGeometry(mouthWidth - 0.42, cavityHeight * 0.82),
       new THREE.MeshBasicMaterial({
-        color,
+        color: "#000000",
         transparent: true,
         opacity: 0.62,
       }),
     );
-    frontGlow.position.set(x, pitFloorY + 0.14, mouthCenterZ + pitDepth / 2 + 0.043);
-    this.scene.add(frontGlow);
+    depthShade.position.set(x, pitFloorY + cavityHeight * 0.42, mouthCenterZ - pitDepth / 2 + 0.15);
+    this.scene.add(depthShade);
 
-    const rearGlow = new THREE.Mesh(
-      new THREE.PlaneGeometry(mouthWidth - 0.26, 0.18),
+    const bottomGlow = new THREE.Mesh(
+      new THREE.PlaneGeometry(mouthWidth - 0.5, pitDepth - 0.4),
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.26,
+        opacity: 0.14,
       }),
     );
-    rearGlow.position.set(x, pitFloorY + 0.12, mouthCenterZ - pitDepth / 2 + 0.041);
-    this.scene.add(rearGlow);
+    bottomGlow.position.set(x, pitFloorY + 0.06, mouthCenterZ + 0.08);
+    bottomGlow.rotation.x = -Math.PI / 2;
+    this.scene.add(bottomGlow);
 
-    const innerGlow = new THREE.Mesh(
-      new THREE.PlaneGeometry(mouthWidth - 0.22, pitDepth - 0.14),
+    const rimGlow = new THREE.Mesh(
+      new THREE.PlaneGeometry(mouthWidth - 0.34, 0.12),
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.18,
+        opacity: 0.34,
       }),
     );
-    innerGlow.position.set(x, pitFloorY + 0.035, mouthCenterZ + 0.06);
-    innerGlow.rotation.x = -Math.PI / 2;
-    this.scene.add(innerGlow);
+    rimGlow.position.set(x, mouthY + 0.08, mouthCenterZ + mouthDepth / 2 + 0.05);
+    this.scene.add(rimGlow);
 
-    const pitLight = new THREE.PointLight(color, 11, 2.6, 2);
-    pitLight.position.set(x, pitFloorY + 0.24, mouthCenterZ + 0.1);
+    const pitLight = new THREE.PointLight(color, 7, 2.2, 2.4);
+    pitLight.position.set(x, pitFloorY + 0.18, mouthCenterZ + 0.12);
     this.scene.add(pitLight);
 
+    const mouthLight = new THREE.PointLight(color, 4.5, 1.8, 2);
+    mouthLight.position.set(x, mouthY + 0.12, mouthCenterZ + mouthDepth / 2 - 0.1);
+    this.scene.add(mouthLight);
+
     const plaque = this.createBillboard(label, color);
-    plaque.position.set(x, this.collectionFloorY + 1.0, this.collectionCenterZ + 0.48);
+    plaque.position.set(x, this.collectionFloorY + 1.12, this.collectionCenterZ + 0.62);
     this.scene.add(plaque);
   }
 
-  private addStaticBody(halfExtents: CANNON.Vec3, position: CANNON.Vec3, rotationX = 0): void {
-    const body = new CANNON.Body({
-      type: CANNON.Body.STATIC,
-      shape: new CANNON.Box(halfExtents),
+  private addStaticBody(halfExtents: Vec3, position: Vec3, rotationX = 0): void {
+    this.physics.createStaticBox({
+      halfExtents,
       position,
-      material: this.floorMaterial,
+      rotationX,
     });
-    if (rotationX !== 0) {
-      body.quaternion.setFromEuler(rotationX, 0, 0);
-    }
-    this.world.addBody(body);
   }
 
   private getUpperDeckSurfaceY(z: number): number {
@@ -1324,6 +1370,20 @@ export class CoinPusherApp {
       ? this.pusherBody.position.y
       : this.getPusherBaseY(this.pusherStartZ) + this.pusherBodyHalfHeight;
     return centerY + this.pusherBodyHalfHeight - Math.tan(this.upperDeckTilt) * (z - centerZ);
+  }
+
+  private getDeckTilt(z: number): number {
+    return z <= this.upperDeckFrontZ + 0.2 ? this.upperDeckTilt : this.lowerDeckTilt;
+  }
+
+  private getItemRestOffset(type: DropItemType): number {
+    if (type === "chest") {
+      return 0.34;
+    }
+    if (type === "rare") {
+      return 0.4;
+    }
+    return 0.08;
   }
 
   private bindControls(): void {
@@ -1568,6 +1628,11 @@ export class CoinPusherApp {
   }
 
   private requestDrop(forceType?: DropItemType): boolean {
+    if (!this.physicsReady) {
+      this.pushMessage("物理引擎还在初始化，请稍后再投币。");
+      this.renderState();
+      return false;
+    }
     if (this.state.coins < BASE_CONFIG.baseDropCost) {
       this.pushMessage("金币不足，无法继续投币。");
       this.renderState();
@@ -1603,8 +1668,12 @@ export class CoinPusherApp {
       velocityX?: number;
       velocityZ?: number;
       randomSpin?: boolean;
+      rotationX?: number;
     },
   ): void {
+    if (!this.physicsReady && !this.physics.isReady()) {
+      return;
+    }
     const spawnX = x ?? THREE.MathUtils.randFloat(-(this.playfieldWidth / 2) + 0.7, this.playfieldWidth / 2 - 0.7);
     const spawnCenterZ = this.pusherBody ? this.pusherBody.position.z : this.pusherStartZ;
     const pusherBackZ = spawnCenterZ - this.pusherDepth / 2;
@@ -1612,76 +1681,65 @@ export class CoinPusherApp {
     const spawnRangeFront = Math.min(this.upperDeckBackZ + 1.18, pusherBackZ + 0.92);
     const spawnZ = z ?? THREE.MathUtils.randFloat(spawnRangeBack, Math.max(spawnRangeBack + 0.12, spawnRangeFront));
     const spawnY = options?.spawnY ?? this.getPusherSurfaceY(spawnZ) + 1.18;
+    const rotationX = options?.rotationX ?? 0;
 
     let mesh: THREE.Object3D;
-    let shape: CANNON.Shape;
-    let mass = 0.48;
     let baseReward = BASE_CONFIG.baseCoinReward;
     let linearDamping = 0.14;
     let angularDamping = 0.2;
 
     if (type === "coin") {
       mesh = this.createCoinMesh();
-      shape = new CANNON.Cylinder(0.35, 0.35, 0.12, 20);
       baseReward = BASE_CONFIG.baseCoinReward;
-      mass = 0.78;
-      linearDamping = 0.18;
-      angularDamping = 0.38;
+      linearDamping = 0.22;
+      angularDamping = 0.82;
     } else if (type === "chest") {
       mesh = this.createChestMesh();
-      shape = new CANNON.Box(new CANNON.Vec3(0.44, 0.31, 0.44));
       baseReward = 26;
-      mass = 1.85;
       linearDamping = 0.16;
       angularDamping = 0.28;
     } else {
       mesh = this.createRareMesh();
-      shape = new CANNON.Sphere(0.38);
       baseReward = 12;
-      mass = 0.96;
       linearDamping = 0.12;
       angularDamping = 0.16;
     }
 
     mesh.position.set(spawnX, spawnY, spawnZ);
+    mesh.rotation.x = rotationX;
     this.scene.add(mesh);
 
-    const body = new CANNON.Body({
-      mass,
-      position: new CANNON.Vec3(spawnX, spawnY, spawnZ),
-      material: this.itemMaterial,
-      linearDamping,
-      angularDamping,
-    });
-    body.addShape(shape);
-    if (type === "coin") {
-      body.angularFactor.set(0.7, 0.28, 0.7);
-    }
-    body.sleepSpeedLimit = 0.08;
-    body.sleepTimeLimit = 0.52;
-    body.velocity.set(
+    const velocity = vec3(
       options?.velocityX ?? THREE.MathUtils.randFloat(-0.03, 0.03),
       THREE.MathUtils.randFloat(-0.08, 0.01),
       options?.velocityZ ?? THREE.MathUtils.randFloat(0.04, 0.14),
     );
-    if (options?.randomSpin === false) {
-      body.angularVelocity.set(0, 0, 0);
-    } else {
+    let angularVelocity = vec3(0, 0, 0);
+    if (options?.randomSpin !== false) {
       if (type === "coin") {
-        body.angularVelocity.set(
+        angularVelocity = vec3(
           THREE.MathUtils.randFloat(-0.35, 0.35),
           THREE.MathUtils.randFloat(-0.18, 0.18),
           THREE.MathUtils.randFloat(-0.35, 0.35),
         );
       } else {
-        body.angularVelocity.set(
+        angularVelocity = vec3(
           THREE.MathUtils.randFloat(-0.75, 0.75),
           THREE.MathUtils.randFloat(-0.75, 0.75),
           THREE.MathUtils.randFloat(-0.75, 0.75),
         );
       }
     }
-    this.world.addBody(body);
+
+    const body = this.physics.createDynamicBody({
+      kind: type,
+      position: vec3(spawnX, spawnY, spawnZ),
+      rotationX,
+      velocity,
+      angularVelocity,
+      linearDamping,
+      angularDamping,
+    });
 
     const item: DropItem = {
       id: randomId(type),
@@ -1713,7 +1771,8 @@ export class CoinPusherApp {
             ? this.getPusherSurfaceY(row.z)
             : this.getLowerDeckSurfaceY(row.z);
         this.spawnItem("coin", x, row.z, {
-          spawnY: surfaceY + 0.055,
+          spawnY: surfaceY + this.getItemRestOffset("coin"),
+          rotationX: this.getDeckTilt(row.z),
           velocityX: THREE.MathUtils.randFloat(-0.03, 0.03),
           velocityZ: THREE.MathUtils.randFloat(-0.01, 0.03),
           randomSpin: false,
@@ -1722,19 +1781,22 @@ export class CoinPusherApp {
     }
 
     this.spawnItem("chest", -3.02, 1.7, {
-      spawnY: this.getLowerDeckSurfaceY(1.7) + 0.16,
+      spawnY: this.getLowerDeckSurfaceY(1.7) + this.getItemRestOffset("chest"),
+      rotationX: this.lowerDeckTilt,
       velocityX: 0,
       velocityZ: 0.02,
       randomSpin: false,
     });
     this.spawnItem("chest", 2.65, 2.55, {
-      spawnY: this.getLowerDeckSurfaceY(2.55) + 0.16,
+      spawnY: this.getLowerDeckSurfaceY(2.55) + this.getItemRestOffset("chest"),
+      rotationX: this.lowerDeckTilt,
       velocityX: 0,
       velocityZ: 0.02,
       randomSpin: false,
     });
     this.spawnItem("rare", 0.15, 3.15, {
-      spawnY: this.getLowerDeckSurfaceY(3.15) + 0.12,
+      spawnY: this.getLowerDeckSurfaceY(3.15) + this.getItemRestOffset("rare"),
+      rotationX: this.lowerDeckTilt,
       velocityX: 0,
       velocityZ: 0.01,
       randomSpin: false,
@@ -1764,6 +1826,7 @@ export class CoinPusherApp {
 
   private loop = (): void => {
     requestAnimationFrame(this.loop);
+    this.handleResize();
 
     const rawDelta = this.clock.getDelta();
     const delta = rawDelta * this.debugOverrides.timeScale;
@@ -1771,6 +1834,15 @@ export class CoinPusherApp {
     this.frameCount += 1;
 
     this.updateAutoDrop(delta);
+    if (!this.physicsReady) {
+      this.processScheduledActions(now);
+      this.updateTimers(delta);
+      this.sampleFps(now);
+      this.renderState();
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
     this.updatePusher(delta);
     if (this.usingTaichiHybrid()) {
       this.applyPendingTaichiAssist();
@@ -1838,8 +1910,7 @@ export class CoinPusherApp {
 
     const y = this.getPusherBaseY(z) + this.pusherBodyHalfHeight + lift;
     const previousPosition = this.pusherBody.position.clone();
-    this.pusherBody.position.set(0, y, z);
-    this.pusherBody.quaternion.setFromEuler(this.upperDeckTilt, 0, 0);
+    this.pusherBody.setNextKinematicPose(0, y, z, this.upperDeckTilt);
     this.pusherBody.velocity.set(
       0,
       (y - previousPosition.y) / Math.max(deltaSeconds, 0.0001),
@@ -1915,10 +1986,10 @@ export class CoinPusherApp {
       .catch((error: unknown) => {
         console.error("Taichi hybrid step failed.", error);
         if (this.physicsBackend === "taichi-hybrid") {
-          this.physicsBackend = "cannon";
+          this.physicsBackend = "rapier";
           this.taichiPhysics = null;
           this.taichiPendingResult = null;
-          this.pushMessage("Taichi runtime failed. Falling back to Cannon physics.");
+          this.pushMessage("Taichi runtime failed. Falling back to Rapier physics.");
           this.renderState();
         }
       })
@@ -2024,7 +2095,7 @@ export class CoinPusherApp {
   }
 
   private stepPhysics(deltaSeconds: number): void {
-    this.world.step(1 / 90, deltaSeconds, 6);
+    this.physics.step(1 / 90, deltaSeconds, 6);
   }
 
   private applyPusherAssist(): void {
@@ -2128,7 +2199,7 @@ export class CoinPusherApp {
     }
 
     for (const body of this.cleanupBodies) {
-      this.world.removeBody(body);
+      this.physics.removeBody(body);
     }
     this.cleanupBodies.length = 0;
 
@@ -2302,7 +2373,7 @@ export class CoinPusherApp {
   }
 
   private getPhysicsStatusViewModel(): {
-    tone: "physics-status-taichi" | "physics-status-cannon" | "physics-status-fallback" | "physics-status-probing";
+    tone: "physics-status-rapier" | "physics-status-taichi" | "physics-status-fallback" | "physics-status-probing";
     title: string;
     detail: string;
   } {
@@ -2311,50 +2382,34 @@ export class CoinPusherApp {
     if (this.physicsBackend === "taichi-hybrid" && this.taichiPhysics?.isReady()) {
       return {
         tone: "physics-status-taichi",
-        title: "Physics: Taichi Hybrid",
-        detail: "WebGPU active. Taichi assist is running.",
+        title: "Physics: Rapier + Taichi",
+        detail: "Rapier rigid bodies with optional WebGPU assist.",
       };
     }
 
-    if (requestedMode === "cannon") {
+    if (this.physicsBackend === "rapier") {
       return {
-        tone: "physics-status-cannon",
-        title: "Physics: Cannon",
-        detail: "Forced by query parameter.",
-      };
-    }
-
-    if (this.taichiAdapterAvailable === null && !this.taichiPhysicsInitStarted) {
-      return {
-        tone: "physics-status-probing",
-        title: "Physics: Probing WebGPU",
-        detail: "Checking whether Taichi can use this browser.",
-      };
-    }
-
-    if (this.taichiAdapterAvailable === false) {
-      return {
-        tone: requestedMode === "taichi" ? "physics-status-fallback" : "physics-status-cannon",
-        title: requestedMode === "taichi" ? "Physics: Cannon Fallback" : "Physics: Cannon",
+        tone: "physics-status-rapier",
+        title: "Physics: Rapier",
         detail:
-          requestedMode === "taichi"
-            ? "WebGPU adapter unavailable in this browser."
-            : "Taichi is unavailable, using Cannon.",
+          requestedMode === "cannon"
+            ? "Cannon path retired. Running Rapier instead."
+            : "Rigid-body solver with CCD and kinematic pusher.",
       };
     }
 
-    if (this.taichiPhysicsInitStarted && !this.taichiPhysics?.isReady()) {
+    if (this.physicsBackend === "failed") {
       return {
-        tone: "physics-status-probing",
-        title: "Physics: Initializing Taichi",
-        detail: "WebGPU adapter found. Compiling Taichi kernels.",
+        tone: "physics-status-fallback",
+        title: "Physics: Rapier Failed",
+        detail: "WASM init failed. Reload the page to retry.",
       };
     }
 
     return {
-      tone: "physics-status-fallback",
-      title: "Physics: Cannon Fallback",
-      detail: "Taichi probe passed, but runtime fell back to Cannon.",
+      tone: "physics-status-probing",
+      title: "Physics: Initializing Rapier",
+      detail: "Loading the Rapier WASM solver.",
     };
   }
 
@@ -2579,7 +2634,7 @@ export class CoinPusherApp {
     this.state.messages = [];
     this.state.debugVisible = previousDebugVisible;
     this.items.forEach((item) => {
-      this.world.removeBody(item.body);
+      this.physics.removeBody(item.body);
       this.scene.remove(item.mesh);
     });
     this.items.length = 0;
@@ -2600,11 +2655,16 @@ export class CoinPusherApp {
   }
 
   private handleResize = (): void => {
-    const width = this.ui.viewport.clientWidth || window.innerWidth;
-    const height = this.ui.viewport.clientHeight || window.innerHeight;
+    const width = Math.max(1, this.ui.viewport.clientWidth || window.innerWidth);
+    const height = Math.max(1, this.ui.viewport.clientHeight || window.innerHeight);
+    if (width === this.lastViewportWidth && height === this.lastViewportHeight) {
+      return;
+    }
+    this.lastViewportWidth = width;
+    this.lastViewportHeight = height;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(width, height);
+    this.renderer.setSize(width, height, false);
   };
 
   private handleKeyDown = (event: KeyboardEvent): void => {

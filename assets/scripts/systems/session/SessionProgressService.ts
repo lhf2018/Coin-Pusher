@@ -93,6 +93,22 @@ export class SessionProgressService {
     }));
   }
 
+  public setAutoDropEnabled(enabled: boolean): void {
+    this.stateStore.update((state) => ({
+      ...state,
+      runtimeFlags: {
+        ...state.runtimeFlags,
+        autoDropEnabled: enabled,
+      },
+    }));
+  }
+
+  public toggleAutoDrop(): boolean {
+    const nextEnabled = !this.stateStore.getState().runtimeFlags.autoDropEnabled;
+    this.setAutoDropEnabled(nextEnabled);
+    return nextEnabled;
+  }
+
   public setDebugPanelVisible(visible: boolean): void {
     this.stateStore.update((state) => ({
       ...state,
@@ -109,6 +125,28 @@ export class SessionProgressService {
       runtimeFlags: {
         ...state.runtimeFlags,
         compactDebugBarVisible: visible,
+      },
+    }));
+  }
+
+  public addInventoryItem(itemId: string, amount = 1): number {
+    const safeAmount = Math.max(1, Math.round(amount));
+    this.stateStore.update((state) => ({
+      ...state,
+      inventory: {
+        ...state.inventory,
+        [itemId]: (state.inventory[itemId] ?? 0) + safeAmount,
+      },
+    }));
+    return this.stateStore.getState().inventory[itemId] ?? 0;
+  }
+
+  public clearInventoryItem(itemId: string): void {
+    this.stateStore.update((state) => ({
+      ...state,
+      inventory: {
+        ...state.inventory,
+        [itemId]: 0,
       },
     }));
   }

@@ -153,8 +153,8 @@ export function createUI(root: HTMLElement): UIRefs {
   physicsStatus.innerHTML = `
     <span class="physics-status-dot"></span>
     <div class="physics-status-copy">
-      <strong class="physics-status-title">Physics: Probing WebGPU</strong>
-      <span class="physics-status-detail">Checking whether Taichi can use this browser.</span>
+      <strong class="physics-status-title">Physics: Initializing Rapier</strong>
+      <span class="physics-status-detail">Loading the Rapier WASM solver.</span>
     </div>
   `;
 
