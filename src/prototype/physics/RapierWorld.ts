@@ -33,13 +33,13 @@ export interface DynamicBodySpec {
   angularDamping: number;
 }
 
-const DEFAULT_FLOOR_FRICTION = 0.22;
+const DEFAULT_FLOOR_FRICTION = 0.42;
 const DEFAULT_FLOOR_RESTITUTION = 0.0;
 const DEFAULT_PUSHER_FRICTION = 0.28;
 const ITEM_FRICTION: Record<DynamicItemKind, number> = {
-  coin: 0.24,
-  chest: 0.3,
-  rare: 0.22,
+  coin: 0.38,
+  chest: 0.34,
+  rare: 0.3,
 };
 
 function copyVec3(value: { x: number; y: number; z: number }): Vec3 {
@@ -201,6 +201,13 @@ export class PhysicsBody {
   public wakeUp(): void {
     this.raw.wakeUp();
   }
+
+  public sleep(): void {
+    if (this.kinematic) {
+      return;
+    }
+    this.raw.sleep();
+  }
 }
 
 export class RapierPhysicsWorld {
@@ -240,7 +247,7 @@ export class RapierPhysicsWorld {
       .setFriction(spec.friction ?? DEFAULT_FLOOR_FRICTION)
       .setRestitution(spec.restitution ?? DEFAULT_FLOOR_RESTITUTION)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
-      .setContactSkin(0.012);
+      .setContactSkin(0.004);
     world.createCollider(collider, body);
   }
 
@@ -321,7 +328,7 @@ export class RapierPhysicsWorld {
         .setFriction(friction)
         .setRestitution(0)
         .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
-        .setContactSkin(0.01)
+        .setContactSkin(0.003)
         .setDensity(18);
     }
     if (kind === "chest") {

@@ -46,8 +46,10 @@ function formatShort(value: number): string {
   return `${Math.round(value)}`;
 }
 
-function easeOutCubic(value: number): number {
-  return 1 - Math.pow(1 - value, 3);
+function easeInOutCubic(value: number): number {
+  return value < 0.5
+    ? 4 * value * value * value
+    : 1 - Math.pow(-2 * value + 2, 3) / 2;
 }
 
 function lerpNumber(current: number, target: number, factor: number): number {
@@ -72,26 +74,19 @@ export class CoinPusherApp {
   private readonly cleanupBodies: PhysicsBody[] = [];
   private readonly scheduledActions: ScheduledAction[] = [];
   private readonly playfieldWidth = TABLE.width - 0.9;
-  private readonly upperDeckDepth = 4.35;
-  private readonly upperDeckThickness = 0.18;
-  private readonly upperDeckTilt = 0.05;
-  private readonly upperDeckY = 0.38;
-  private readonly upperDeckCenterZ = -1.55;
-  private readonly upperDeckBackZ = -3.72;
-  private readonly upperDeckFrontZ = 0.62;
-  private readonly lowerDeckDepth = 3.92;
-  private readonly lowerDeckThickness = 0.18;
-  private readonly lowerDeckTilt = 0.11;
-  private readonly lowerDeckY = 0.04;
-  private readonly lowerDeckCenterZ = 2.36;
-  private readonly lowerDeckBackZ = 0.94;
-  private readonly lowerDeckFrontZ = 4.28;
+  /** Single flat playfield floor under the pusher. */
+  private readonly floorThickness = 0.22;
+  private readonly floorY = 0.2;
+  private readonly floorBackZ = -3.72;
+  private readonly floorFrontZ = 4.28;
+  private readonly floorDepth = this.floorFrontZ - this.floorBackZ;
+  private readonly floorCenterZ = (this.floorBackZ + this.floorFrontZ) / 2;
   private readonly payoutGapZ = 4.5;
   private readonly collectionCenterZ = 5.1;
   private readonly collectionDepth = 1.5;
   private readonly collectionFloorY = -0.24;
   private readonly slotSplitX = 1.55;
-  private readonly pusherApertureClearance = 0.012;
+  private readonly pusherApertureClearance = 0.02;
   private readonly pusherWidth = this.playfieldWidth - this.pusherApertureClearance * 2;
   private readonly pusherDepth = 3.72;
   private readonly pusherBodyHalfHeight = 0.28;
@@ -99,14 +94,13 @@ export class CoinPusherApp {
   private readonly pusherFaceThickness = 0.28;
   private readonly pusherRemainInside = 0.55;
   private readonly pusherTravel = 0.78;
-  private readonly pusherApertureZ = this.upperDeckBackZ + 0.42;
+  private readonly pusherApertureZ = this.floorBackZ + 0.42;
   private readonly pusherEndZ =
     this.pusherApertureZ -
     this.pusherFaceThickness / 2 -
     this.pusherRemainInside +
     this.pusherDepth / 2;
   private readonly pusherStartZ = this.pusherEndZ - this.pusherTravel;
-  private readonly pusherLiftAmount = 0.008;
   private autoDropElapsedMs = 0;
   private pusherTime = 0;
   private lastFpsSampleTime = performance.now();
@@ -359,180 +353,80 @@ export class CoinPusherApp {
     trimDeck.receiveShadow = true;
     this.scene.add(trimDeck);
 
-    const upperDeck = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth, this.upperDeckThickness, this.upperDeckDepth),
+    const floor = new THREE.Mesh(
+      new THREE.BoxGeometry(this.playfieldWidth, this.floorThickness, this.floorDepth),
       new THREE.MeshStandardMaterial({
-        color: "#214d6c",
-        emissive: "#13354a",
-        metalness: 0.72,
-        roughness: 0.24,
-      }),
-    );
-    upperDeck.position.set(0, this.upperDeckY, this.upperDeckCenterZ);
-    upperDeck.rotation.x = this.upperDeckTilt;
-    upperDeck.castShadow = true;
-    upperDeck.receiveShadow = true;
-    this.scene.add(upperDeck);
-
-    const lowerDeck = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth, this.lowerDeckThickness, this.lowerDeckDepth),
-      new THREE.MeshStandardMaterial({
-        color: "#163750",
-        emissive: "#0d2638",
-        metalness: 0.72,
+        color: "#1d455f",
+        emissive: "#102c3e",
+        metalness: 0.68,
         roughness: 0.28,
       }),
     );
-    lowerDeck.position.set(0, this.lowerDeckY, this.lowerDeckCenterZ);
-    lowerDeck.rotation.x = this.lowerDeckTilt;
-    lowerDeck.castShadow = true;
-    lowerDeck.receiveShadow = true;
-    this.scene.add(lowerDeck);
-
-    const upperDecal = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.playfieldWidth - 0.9, this.upperDeckDepth - 0.55),
-      new THREE.MeshBasicMaterial({
-        color: "#0d7f9f",
-        transparent: true,
-        opacity: 0.08,
-      }),
-    );
-    upperDecal.rotation.x = -Math.PI / 2 + this.upperDeckTilt;
-    upperDecal.position.set(
-      0,
-      this.getUpperDeckSurfaceY(this.upperDeckCenterZ) + 0.012,
-      this.upperDeckCenterZ,
-    );
-    this.scene.add(upperDecal);
-
-    const lowerDecal = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.playfieldWidth - 0.75, this.lowerDeckDepth - 0.58),
-      new THREE.MeshBasicMaterial({
-        color: "#0f5c75",
-        transparent: true,
-        opacity: 0.09,
-      }),
-    );
-    lowerDecal.rotation.x = -Math.PI / 2 + this.lowerDeckTilt;
-    lowerDecal.position.set(
-      0,
-      this.getLowerDeckSurfaceY(this.lowerDeckCenterZ) + 0.012,
-      this.lowerDeckCenterZ,
-    );
-    this.scene.add(lowerDecal);
+    floor.position.set(0, this.floorY, this.floorCenterZ);
+    floor.castShadow = true;
+    floor.receiveShadow = true;
+    this.scene.add(floor);
 
     this.addStaticBody(
-      vec3(this.playfieldWidth / 2, this.upperDeckThickness / 2, this.upperDeckDepth / 2),
-      vec3(0, this.upperDeckY, this.upperDeckCenterZ),
-      this.upperDeckTilt,
-    );
-    this.addStaticBody(
-      vec3(this.playfieldWidth / 2, this.lowerDeckThickness / 2, this.lowerDeckDepth / 2),
-      vec3(0, this.lowerDeckY, this.lowerDeckCenterZ),
-      this.lowerDeckTilt,
+      vec3(this.playfieldWidth / 2, this.floorThickness / 2, this.floorDepth / 2),
+      vec3(0, this.floorY, this.floorCenterZ),
     );
 
-    const deckCoreMaterial = new THREE.MeshStandardMaterial({
-      color: "#10273a",
-      emissive: "#081521",
-      metalness: 0.32,
-      roughness: 0.74,
+    const railMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#2a4a61",
+      emissive: "#102433",
+      metalness: 0.58,
+      roughness: 0.36,
+      clearcoat: 0.18,
+      clearcoatRoughness: 0.35,
     });
 
-    const upperDeckCore = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth - 0.36, 0.18, this.upperDeckDepth - 0.28),
-      deckCoreMaterial,
-    );
-    upperDeckCore.position.set(0, this.upperDeckY - this.upperDeckThickness / 2 - 0.09, this.upperDeckCenterZ + 0.08);
-    upperDeckCore.rotation.x = this.upperDeckTilt;
-    upperDeckCore.castShadow = true;
-    upperDeckCore.receiveShadow = true;
-    this.scene.add(upperDeckCore);
+    const sideWallDepth = this.floorDepth + 0.35;
+    const sideWallCenterZ = this.floorCenterZ;
+    const sideWallBaseY = this.getFloorSurfaceY();
+    for (const direction of [-1, 1] as const) {
+      const sideWall = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 1.28, sideWallDepth),
+        railMaterial,
+      );
+      sideWall.position.set(
+        direction * (this.playfieldWidth / 2 + 0.08),
+        sideWallBaseY + 0.52,
+        sideWallCenterZ,
+      );
+      sideWall.castShadow = true;
+      sideWall.receiveShadow = true;
+      this.scene.add(sideWall);
 
-    const lowerDeckCore = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth - 0.32, 0.16, this.lowerDeckDepth - 0.24),
-      deckCoreMaterial,
-    );
-    lowerDeckCore.position.set(0, this.lowerDeckY - this.lowerDeckThickness / 2 - 0.08, this.lowerDeckCenterZ + 0.06);
-    lowerDeckCore.rotation.x = this.lowerDeckTilt;
-    lowerDeckCore.castShadow = true;
-    lowerDeckCore.receiveShadow = true;
-    this.scene.add(lowerDeckCore);
+      this.addStaticBody(
+        vec3(0.08, 0.64, sideWallDepth / 2),
+        vec3(
+          direction * (this.playfieldWidth / 2 + 0.08),
+          sideWallBaseY + 0.52,
+          sideWallCenterZ,
+        ),
+      );
 
-    const upperDeckShadow = this.createShadowPlate(this.playfieldWidth - 0.3, this.upperDeckDepth - 0.26, 0.22);
-    upperDeckShadow.position.set(0, this.upperDeckY - this.upperDeckThickness / 2 - 0.015, this.upperDeckCenterZ + 0.12);
-    upperDeckShadow.rotation.x = -Math.PI / 2 + this.upperDeckTilt;
-    this.scene.add(upperDeckShadow);
-
-    const lowerDeckShadow = this.createShadowPlate(this.playfieldWidth - 0.26, this.lowerDeckDepth - 0.24, 0.18);
-    lowerDeckShadow.position.set(0, this.lowerDeckY - this.lowerDeckThickness / 2 - 0.012, this.lowerDeckCenterZ + 0.08);
-    lowerDeckShadow.rotation.x = -Math.PI / 2 + this.lowerDeckTilt;
-    this.scene.add(lowerDeckShadow);
-
-    const railMaterial = new THREE.MeshStandardMaterial({
-      color: "#23485d",
-      emissive: "#102434",
-      metalness: 0.72,
-      roughness: 0.28,
-      transparent: true,
-      opacity: 0.86,
-    });
-
-    const sideSections = [
-      { centerZ: this.upperDeckCenterZ, depth: this.upperDeckDepth, tilt: this.upperDeckTilt, baseY: this.getUpperDeckSurfaceY(this.upperDeckCenterZ) },
-      { centerZ: this.lowerDeckCenterZ, depth: this.lowerDeckDepth, tilt: this.lowerDeckTilt, baseY: this.getLowerDeckSurfaceY(this.lowerDeckCenterZ) },
-    ];
-    for (const section of sideSections) {
-      for (const direction of [-1, 1] as const) {
-        const rail = new THREE.Mesh(
-          new THREE.BoxGeometry(0.2, 1.02, section.depth + 0.08),
-          railMaterial,
-        );
-        rail.position.set(
-          direction * (this.playfieldWidth / 2 + 0.1),
-          section.baseY + 0.42,
-          section.centerZ,
-        );
-        rail.rotation.x = section.tilt;
-        rail.castShadow = true;
-        rail.receiveShadow = true;
-        this.scene.add(rail);
-
-        this.addStaticBody(
-          vec3(0.1, 0.51, section.depth / 2 + 0.04),
-          vec3(
-            direction * (this.playfieldWidth / 2 + 0.1),
-            section.baseY + 0.42,
-            section.centerZ,
-          ),
-          section.tilt,
-        );
-      }
+      const sideTrim = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, 1.18, sideWallDepth + 0.02),
+        new THREE.MeshPhysicalMaterial({
+          color: "#9eb8c9",
+          emissive: "#2a4050",
+          metalness: 0.82,
+          roughness: 0.22,
+          clearcoat: 0.3,
+          clearcoatRoughness: 0.18,
+        }),
+      );
+      sideTrim.position.set(
+        direction * (this.playfieldWidth / 2 + 0.01),
+        sideWallBaseY + 0.5,
+        sideWallCenterZ,
+      );
+      sideTrim.castShadow = true;
+      sideTrim.receiveShadow = true;
+      this.scene.add(sideTrim);
     }
-
-    const upperFrontGuide = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.playfieldWidth - 0.26, 0.18),
-      new THREE.MeshBasicMaterial({
-        color: "#b8d4e3",
-        transparent: true,
-        opacity: 0.42,
-      }),
-    );
-    upperFrontGuide.position.set(0, this.getUpperDeckSurfaceY(this.upperDeckFrontZ) + 0.008, this.upperDeckFrontZ + 0.02);
-    upperFrontGuide.rotation.x = -Math.PI / 2 + this.upperDeckTilt;
-    this.scene.add(upperFrontGuide);
-
-    const lowerBackGuide = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.playfieldWidth - 0.32, 0.16),
-      new THREE.MeshBasicMaterial({
-        color: "#85a8bd",
-        transparent: true,
-        opacity: 0.34,
-      }),
-    );
-    lowerBackGuide.position.set(0, this.getLowerDeckSurfaceY(this.lowerDeckBackZ) + 0.008, this.lowerDeckBackZ - 0.03);
-    lowerBackGuide.rotation.x = -Math.PI / 2 + this.lowerDeckTilt;
-    this.scene.add(lowerBackGuide);
 
     const backWall = new THREE.Mesh(
       new THREE.BoxGeometry(this.playfieldWidth + 0.55, 3.8, 0.28),
@@ -543,16 +437,16 @@ export class CoinPusherApp {
         roughness: 0.72,
       }),
     );
-    backWall.position.set(0, 1.74, this.upperDeckBackZ - 0.58);
+    backWall.position.set(0, 1.74, this.floorBackZ - 0.58);
     backWall.castShadow = true;
     backWall.receiveShadow = true;
     this.scene.add(backWall);
     this.addStaticBody(
       vec3((this.playfieldWidth + 0.55) / 2, 1.8, 0.14),
-      vec3(0, 1.74, this.upperDeckBackZ - 0.58),
+      vec3(0, 1.74, this.floorBackZ - 0.58),
     );
 
-    const deckFrontY = this.getLowerDeckSurfaceY(this.lowerDeckFrontZ);
+    const deckFrontY = this.getFloorSurfaceY();
     const cliffEdge = new THREE.Mesh(
       new THREE.BoxGeometry(this.playfieldWidth - 0.12, 0.12, 0.18),
       new THREE.MeshPhysicalMaterial({
@@ -564,8 +458,7 @@ export class CoinPusherApp {
         clearcoatRoughness: 0.2,
       }),
     );
-    cliffEdge.position.set(0, deckFrontY - 0.02, this.lowerDeckFrontZ + 0.04);
-    cliffEdge.rotation.x = this.lowerDeckTilt;
+    cliffEdge.position.set(0, deckFrontY - 0.02, this.floorFrontZ + 0.04);
     cliffEdge.castShadow = true;
     cliffEdge.receiveShadow = true;
     this.scene.add(cliffEdge);
@@ -578,8 +471,8 @@ export class CoinPusherApp {
         opacity: 0.72,
       }),
     );
-    cliffShadow.position.set(0, deckFrontY - 0.18, this.lowerDeckFrontZ + 0.28);
-    cliffShadow.rotation.x = -Math.PI / 2 + 0.18;
+    cliffShadow.position.set(0, deckFrontY - 0.18, this.floorFrontZ + 0.28);
+    cliffShadow.rotation.x = -Math.PI / 2;
     this.scene.add(cliffShadow);
 
     const sideDrainMaterial = new THREE.MeshBasicMaterial({
@@ -594,10 +487,10 @@ export class CoinPusherApp {
       );
       sideDrain.position.set(
         direction * (this.playfieldWidth / 2 - 0.18),
-        this.getLowerDeckSurfaceY(2.65) + 0.008,
+        this.getFloorSurfaceY() + 0.008,
         2.65,
       );
-      sideDrain.rotation.x = -Math.PI / 2 + this.lowerDeckTilt;
+      sideDrain.rotation.x = -Math.PI / 2;
       this.scene.add(sideDrain);
     }
 
@@ -707,23 +600,22 @@ export class CoinPusherApp {
 
     this.pusherMesh.position.set(
       0,
-      this.getPusherBaseY(this.pusherStartZ) + this.pusherBodyHalfHeight,
+      this.getPusherBaseY() + this.pusherBodyHalfHeight,
       this.pusherStartZ,
     );
-    this.pusherMesh.rotation.x = this.upperDeckTilt;
     this.scene.add(this.pusherMesh);
 
     this.pusherBody = this.physics.createKinematicBody(
       vec3(
         0,
-        this.getPusherBaseY(this.pusherStartZ) + this.pusherBodyHalfHeight,
+        this.getPusherBaseY() + this.pusherBodyHalfHeight,
         this.pusherStartZ,
       ),
-      this.upperDeckTilt,
+      0,
       [
         {
           halfExtents: vec3(this.pusherWidth / 2, this.pusherBodyHalfHeight, this.pusherDepth / 2),
-          friction: 0.92,
+          friction: 0.62,
         },
       ],
     );
@@ -731,52 +623,65 @@ export class CoinPusherApp {
 
   private createPusherTunnel(): void {
     const clearance = this.pusherApertureClearance;
+    const physicsClearance = clearance + 0.018;
     const pusherHeight = this.pusherBodyHalfHeight * 2;
     const holeWidth = this.pusherWidth + clearance * 2;
     const holeHeight = pusherHeight + clearance * 2;
+    const physicsHoleWidth = this.pusherWidth + physicsClearance * 2;
+    const physicsHoleHeight = pusherHeight + physicsClearance * 2;
     const faceThickness = this.pusherFaceThickness;
     const apertureZ = this.pusherApertureZ;
     const apertureInnerZ = apertureZ - faceThickness / 2;
     const startRearZ = this.pusherStartZ - this.pusherDepth / 2;
     const tunnelDepth = Math.max(1.2, apertureInnerZ - startRearZ + 0.35);
     const tunnelCenterZ = apertureInnerZ - tunnelDepth / 2;
-    const holeCenterY = this.getPusherBaseY(apertureZ) + this.pusherBodyHalfHeight;
+    const holeCenterY = this.getPusherBaseY() + this.pusherBodyHalfHeight;
+
     const wallWidth = this.playfieldWidth + 0.55;
-    const wallHeight = 2.85;
-    const wallCenterY = holeCenterY + wallHeight * 0.18;
+    const wallHeight = 3.8;
+    const wallCenterY = 1.74;
     const holeOffsetY = holeCenterY - wallCenterY;
 
-    const shellMaterial = new THREE.MeshStandardMaterial({
-      color: "#2d4b60",
-      emissive: "#132636",
-      metalness: 0.48,
-      roughness: 0.42,
-    });
     const faceMaterial = new THREE.MeshPhysicalMaterial({
-      color: "#5f7f95",
-      emissive: "#1d3344",
-      metalness: 0.68,
-      roughness: 0.28,
-      clearcoat: 0.16,
-      clearcoatRoughness: 0.22,
+      color: "#355f7a",
+      emissive: "#143044",
+      metalness: 0.52,
+      roughness: 0.38,
+      clearcoat: 0.22,
+      clearcoatRoughness: 0.28,
       side: THREE.DoubleSide,
     });
-    const cavityMaterial = new THREE.MeshStandardMaterial({
-      color: "#050b12",
-      emissive: "#020508",
-      metalness: 0.08,
-      roughness: 0.92,
+    const shellMaterial = new THREE.MeshStandardMaterial({
+      color: "#1a3346",
+      emissive: "#0b1822",
+      metalness: 0.4,
+      roughness: 0.55,
+    });
+    const trimMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#d7e6f0",
+      emissive: "#3d5668",
+      metalness: 0.88,
+      roughness: 0.18,
+      clearcoat: 0.4,
+      clearcoatRoughness: 0.12,
+    });
+    const accentMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#4ec4e0",
+      emissive: "#1a6f86",
+      metalness: 0.55,
+      roughness: 0.28,
+      clearcoat: 0.25,
+      clearcoatRoughness: 0.2,
     });
 
     const addTunnelPart = (
       size: [number, number, number],
       position: THREE.Vector3,
       material: THREE.Material,
-      withPhysics = true,
+      withPhysics = false,
     ): void => {
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
       mesh.position.copy(position);
-      mesh.rotation.x = this.upperDeckTilt;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.scene.add(mesh);
@@ -784,12 +689,10 @@ export class CoinPusherApp {
         this.addStaticBody(
           vec3(size[0] / 2, size[1] / 2, size[2] / 2),
           vec3(position.x, position.y, position.z),
-          this.upperDeckTilt,
         );
       }
     };
 
-    // One continuous wall panel with a rectangular aperture cut out.
     const wallShape = new THREE.Shape();
     wallShape.moveTo(-wallWidth / 2, -wallHeight / 2);
     wallShape.lineTo(wallWidth / 2, -wallHeight / 2);
@@ -813,74 +716,105 @@ export class CoinPusherApp {
     wallGeometry.translate(0, 0, -faceThickness / 2);
     const apertureWall = new THREE.Mesh(wallGeometry, faceMaterial);
     apertureWall.position.set(0, wallCenterY, apertureZ);
-    apertureWall.rotation.x = this.upperDeckTilt;
     apertureWall.castShadow = true;
     apertureWall.receiveShadow = true;
     this.scene.add(apertureWall);
 
-    // Physics colliders around the hole (visual wall is a single mesh).
-    const sideWidth = (wallWidth - holeWidth) / 2;
-    const topHeight = wallHeight / 2 - (holeOffsetY + holeHeight / 2);
-    const bottomHeight = wallHeight / 2 + (holeOffsetY - holeHeight / 2);
-    const sideCenterX = holeWidth / 2 + sideWidth / 2;
-    const topCenterY = holeCenterY + holeHeight / 2 + topHeight / 2;
-    const bottomCenterY = holeCenterY - holeHeight / 2 - bottomHeight / 2;
+    const upperPanel = new THREE.Mesh(
+      new THREE.PlaneGeometry(wallWidth - 0.55, 1.55),
+      new THREE.MeshPhysicalMaterial({
+        color: "#2c526b",
+        emissive: "#123246",
+        metalness: 0.46,
+        roughness: 0.42,
+        clearcoat: 0.16,
+        clearcoatRoughness: 0.3,
+        transparent: true,
+        opacity: 0.92,
+      }),
+    );
+    upperPanel.position.set(0, holeCenterY + holeHeight / 2 + 1.05, apertureZ + faceThickness / 2 + 0.008);
+    this.scene.add(upperPanel);
 
-    this.addStaticBody(
-      vec3(sideWidth / 2, holeHeight / 2, faceThickness / 2),
-      vec3(-sideCenterX, holeCenterY, apertureZ),
-      this.upperDeckTilt,
+    const accentBar = new THREE.Mesh(
+      new THREE.BoxGeometry(wallWidth - 0.7, 0.07, 0.04),
+      accentMaterial,
     );
-    this.addStaticBody(
-      vec3(sideWidth / 2, holeHeight / 2, faceThickness / 2),
-      vec3(sideCenterX, holeCenterY, apertureZ),
-      this.upperDeckTilt,
+    accentBar.position.set(0, holeCenterY + holeHeight / 2 + 0.28, apertureZ + faceThickness / 2 + 0.02);
+    accentBar.castShadow = true;
+    this.scene.add(accentBar);
+
+    const lipDepth = 0.06;
+    const lipThickness = 0.05;
+    const lipZ = apertureZ + faceThickness / 2 + lipDepth / 2 - 0.01;
+    addTunnelPart(
+      [holeWidth + lipThickness * 2, lipThickness, lipDepth],
+      new THREE.Vector3(0, holeCenterY + holeHeight / 2 + lipThickness / 2, lipZ),
+      trimMaterial,
     );
-    this.addStaticBody(
-      vec3(holeWidth / 2, topHeight / 2, faceThickness / 2),
-      vec3(0, topCenterY, apertureZ),
-      this.upperDeckTilt,
+    addTunnelPart(
+      [holeWidth + lipThickness * 2, lipThickness, lipDepth],
+      new THREE.Vector3(0, holeCenterY - holeHeight / 2 - lipThickness / 2, lipZ),
+      trimMaterial,
     );
-    if (bottomHeight > 0.04) {
-      this.addStaticBody(
-        vec3(holeWidth / 2, bottomHeight / 2, faceThickness / 2),
-        vec3(0, bottomCenterY, apertureZ),
-        this.upperDeckTilt,
+    for (const direction of [-1, 1] as const) {
+      addTunnelPart(
+        [lipThickness, holeHeight, lipDepth],
+        new THREE.Vector3(direction * (holeWidth / 2 + lipThickness / 2), holeCenterY, lipZ),
+        trimMaterial,
       );
     }
 
-    // Tunnel shell behind the wall so the pusher stays recessed.
+    const sideWidth = (wallWidth - physicsHoleWidth) / 2;
+    const topHeight = wallHeight / 2 - (holeOffsetY + physicsHoleHeight / 2);
+    const bottomHeight = wallHeight / 2 + (holeOffsetY - physicsHoleHeight / 2);
+    const sideCenterX = physicsHoleWidth / 2 + sideWidth / 2;
+    const topCenterY = holeCenterY + physicsHoleHeight / 2 + topHeight / 2;
+    const bottomCenterY = holeCenterY - physicsHoleHeight / 2 - bottomHeight / 2;
+
+    this.addStaticBody(
+      vec3(sideWidth / 2, wallHeight / 2, faceThickness / 2),
+      vec3(-sideCenterX, wallCenterY, apertureZ),
+    );
+    this.addStaticBody(
+      vec3(sideWidth / 2, wallHeight / 2, faceThickness / 2),
+      vec3(sideCenterX, wallCenterY, apertureZ),
+    );
+    this.addStaticBody(
+      vec3(physicsHoleWidth / 2, topHeight / 2, faceThickness / 2),
+      vec3(0, topCenterY, apertureZ),
+    );
+    if (bottomHeight > 0.04) {
+      this.addStaticBody(
+        vec3(physicsHoleWidth / 2, bottomHeight / 2, faceThickness / 2),
+        vec3(0, bottomCenterY, apertureZ),
+      );
+    }
+
     const shellSideWidth = Math.max(0.22, (wallWidth - holeWidth) / 2);
     addTunnelPart(
-      [wallWidth, 0.26, tunnelDepth],
-      new THREE.Vector3(0, holeCenterY + holeHeight / 2 + 0.13, tunnelCenterZ),
+      [wallWidth, 0.22, tunnelDepth],
+      new THREE.Vector3(0, holeCenterY + holeHeight / 2 + 0.14, tunnelCenterZ),
       shellMaterial,
     );
     addTunnelPart(
-      [wallWidth, Math.max(0.16, bottomHeight), tunnelDepth],
-      new THREE.Vector3(0, bottomCenterY, tunnelCenterZ),
+      [wallWidth, Math.max(0.16, bottomHeight * 0.55), tunnelDepth],
+      new THREE.Vector3(0, holeCenterY - holeHeight / 2 - 0.12, tunnelCenterZ),
       shellMaterial,
     );
     for (const direction of [-1, 1] as const) {
       addTunnelPart(
-        [shellSideWidth, holeHeight, tunnelDepth],
+        [shellSideWidth, holeHeight + 0.2, tunnelDepth],
         new THREE.Vector3(direction * (holeWidth / 2 + shellSideWidth / 2), holeCenterY, tunnelCenterZ),
         shellMaterial,
       );
     }
 
-    const cavity = new THREE.Mesh(
-      new THREE.PlaneGeometry(holeWidth - clearance, holeHeight - clearance),
-      cavityMaterial,
-    );
-    cavity.position.set(0, holeCenterY, apertureInnerZ - 0.03);
-    cavity.rotation.x = this.upperDeckTilt;
-    this.scene.add(cavity);
-
     addTunnelPart(
       [wallWidth + 0.08, wallHeight + 0.12, 0.24],
       new THREE.Vector3(0, wallCenterY, tunnelCenterZ - tunnelDepth / 2 - 0.08),
       shellMaterial,
+      true,
     );
   }
 
@@ -894,7 +828,7 @@ export class CoinPusherApp {
         roughness: 0.82,
       }),
     );
-    backPanel.position.set(0, 1.9, this.upperDeckBackZ - 0.46);
+    backPanel.position.set(0, 1.9, this.floorBackZ - 0.46);
     this.scene.add(backPanel);
 
     const glassMaterial = new THREE.MeshPhysicalMaterial({
@@ -962,20 +896,6 @@ export class CoinPusherApp {
     const sprite = new THREE.Sprite(material);
     sprite.scale.set(2.6, 0.85, 1);
     return sprite;
-  }
-
-  private createShadowPlate(width: number, depth: number, opacity: number): THREE.Mesh {
-    const shadow = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, depth),
-      new THREE.MeshBasicMaterial({
-        color: "#02060b",
-        transparent: true,
-        opacity,
-        depthWrite: false,
-      }),
-    );
-    shadow.renderOrder = 1;
-    return shadow;
   }
 
   private createCoinMesh(): THREE.Group {
@@ -1127,7 +1047,7 @@ export class CoinPusherApp {
     const pitDepth = mouthDepth - 0.1;
     const pitFloorY = this.getCollectionPitFloorY();
     const mouthCenterZ = this.getCollectionPitCenterZ() + 0.02;
-    const mouthY = this.getLowerDeckSurfaceY(this.lowerDeckFrontZ) - 0.08;
+    const mouthY = this.getFloorSurfaceY() - 0.08;
     const cavityHeight = mouthY - pitFloorY;
 
     const rimMaterial = new THREE.MeshPhysicalMaterial({
@@ -1294,40 +1214,19 @@ export class CoinPusherApp {
     });
   }
 
-  private getUpperDeckSurfaceY(z: number): number {
-    return (
-      this.upperDeckY +
-      this.upperDeckThickness / 2 -
-      Math.tan(this.upperDeckTilt) * (z - this.upperDeckCenterZ)
-    );
+  private getFloorSurfaceY(_z?: number): number {
+    return this.floorY + this.floorThickness / 2;
   }
 
-  private getLowerDeckSurfaceY(z: number): number {
-    return (
-      this.lowerDeckY +
-      this.lowerDeckThickness / 2 -
-      Math.tan(this.lowerDeckTilt) * (z - this.lowerDeckCenterZ)
-    );
+  private getPusherBaseY(_z?: number): number {
+    return this.getFloorSurfaceY() + this.pusherHoverGap;
   }
 
-  private getSurfaceYForZ(z: number): number {
-    return z <= this.upperDeckFrontZ ? this.getUpperDeckSurfaceY(z) : this.getLowerDeckSurfaceY(z);
-  }
-
-  private getPusherBaseY(z: number): number {
-    return this.getUpperDeckSurfaceY(z) + this.pusherHoverGap;
-  }
-
-  private getPusherSurfaceY(z: number): number {
-    const centerZ = this.pusherBody ? this.pusherBody.position.z : this.pusherStartZ;
+  private getPusherSurfaceY(_z?: number): number {
     const centerY = this.pusherBody
       ? this.pusherBody.position.y
-      : this.getPusherBaseY(this.pusherStartZ) + this.pusherBodyHalfHeight;
-    return centerY + this.pusherBodyHalfHeight - Math.tan(this.upperDeckTilt) * (z - centerZ);
-  }
-
-  private getDeckTilt(z: number): number {
-    return z <= this.upperDeckFrontZ + 0.2 ? this.upperDeckTilt : this.lowerDeckTilt;
+      : this.getPusherBaseY() + this.pusherBodyHalfHeight;
+    return centerY + this.pusherBodyHalfHeight;
   }
 
   private getItemRestOffset(type: DropItemType): number {
@@ -1631,8 +1530,8 @@ export class CoinPusherApp {
     const spawnX = x ?? THREE.MathUtils.randFloat(-(this.playfieldWidth / 2) + 0.7, this.playfieldWidth / 2 - 0.7);
     const spawnCenterZ = this.pusherBody ? this.pusherBody.position.z : this.pusherStartZ;
     const pusherBackZ = spawnCenterZ - this.pusherDepth / 2;
-    const spawnRangeBack = Math.max(this.upperDeckBackZ + 0.48, pusherBackZ + 0.34);
-    const spawnRangeFront = Math.min(this.upperDeckBackZ + 1.18, pusherBackZ + 0.92);
+    const spawnRangeBack = Math.max(this.floorBackZ + 0.48, pusherBackZ + 0.34);
+    const spawnRangeFront = Math.min(this.floorBackZ + 1.18, pusherBackZ + 0.92);
     const spawnZ = z ?? THREE.MathUtils.randFloat(spawnRangeBack, Math.max(spawnRangeBack + 0.12, spawnRangeFront));
     const spawnY = options?.spawnY ?? this.getPusherSurfaceY(spawnZ) + 1.18;
     const rotationX = options?.rotationX ?? 0;
@@ -1645,18 +1544,18 @@ export class CoinPusherApp {
     if (type === "coin") {
       mesh = this.createCoinMesh();
       baseReward = BASE_CONFIG.baseCoinReward;
-      linearDamping = 0.22;
-      angularDamping = 0.82;
+      linearDamping = 0.55;
+      angularDamping = 1.4;
     } else if (type === "chest") {
       mesh = this.createChestMesh();
       baseReward = 26;
-      linearDamping = 0.16;
-      angularDamping = 0.28;
+      linearDamping = 0.28;
+      angularDamping = 0.55;
     } else {
       mesh = this.createRareMesh();
       baseReward = 12;
-      linearDamping = 0.12;
-      angularDamping = 0.16;
+      linearDamping = 0.24;
+      angularDamping = 0.4;
     }
 
     mesh.position.set(spawnX, spawnY, spawnZ);
@@ -1723,10 +1622,10 @@ export class CoinPusherApp {
         const surfaceY =
           row.zone === "pusher"
             ? this.getPusherSurfaceY(row.z)
-            : this.getLowerDeckSurfaceY(row.z);
+            : this.getFloorSurfaceY();
         this.spawnItem("coin", x, row.z, {
           spawnY: surfaceY + this.getItemRestOffset("coin"),
-          rotationX: this.getDeckTilt(row.z),
+          rotationX: 0,
           velocityX: THREE.MathUtils.randFloat(-0.03, 0.03),
           velocityZ: THREE.MathUtils.randFloat(-0.01, 0.03),
           randomSpin: false,
@@ -1735,22 +1634,22 @@ export class CoinPusherApp {
     }
 
     this.spawnItem("chest", -3.02, 1.7, {
-      spawnY: this.getLowerDeckSurfaceY(1.7) + this.getItemRestOffset("chest"),
-      rotationX: this.lowerDeckTilt,
+      spawnY: this.getFloorSurfaceY(1.7) + this.getItemRestOffset("chest"),
+      rotationX: 0,
       velocityX: 0,
       velocityZ: 0.02,
       randomSpin: false,
     });
     this.spawnItem("chest", 2.65, 2.55, {
-      spawnY: this.getLowerDeckSurfaceY(2.55) + this.getItemRestOffset("chest"),
-      rotationX: this.lowerDeckTilt,
+      spawnY: this.getFloorSurfaceY(2.55) + this.getItemRestOffset("chest"),
+      rotationX: 0,
       velocityX: 0,
       velocityZ: 0.02,
       randomSpin: false,
     });
     this.spawnItem("rare", 0.15, 3.15, {
-      spawnY: this.getLowerDeckSurfaceY(3.15) + this.getItemRestOffset("rare"),
-      rotationX: this.lowerDeckTilt,
+      spawnY: this.getFloorSurfaceY(3.15) + this.getItemRestOffset("rare"),
+      rotationX: 0,
       velocityX: 0,
       velocityZ: 0.01,
       randomSpin: false,
@@ -1845,33 +1744,23 @@ export class CoinPusherApp {
     this.pusherTime = (this.pusherTime + deltaSeconds * cycleSpeed) % 1;
 
     let z = this.pusherStartZ;
-    let lift = 0;
-
-    if (this.pusherTime < 0.58) {
-      const t = easeOutCubic(this.pusherTime / 0.58);
+    if (this.pusherTime < 0.5) {
+      const t = easeInOutCubic(this.pusherTime / 0.5);
       z = THREE.MathUtils.lerp(this.pusherStartZ, this.pusherEndZ, t);
-    } else if (this.pusherTime < 0.68) {
-      z = this.pusherEndZ;
-    } else if (this.pusherTime < 0.94) {
-      const t = (this.pusherTime - 0.68) / 0.26;
-      z = THREE.MathUtils.lerp(this.pusherEndZ, this.pusherStartZ, t);
-      lift = Math.sin(t * Math.PI) * this.pusherLiftAmount;
     } else {
-      const t = (this.pusherTime - 0.94) / 0.06;
-      z = this.pusherStartZ;
-      lift = THREE.MathUtils.lerp(this.pusherLiftAmount * 0.16, 0, t);
+      const t = easeInOutCubic((this.pusherTime - 0.5) / 0.5);
+      z = THREE.MathUtils.lerp(this.pusherEndZ, this.pusherStartZ, t);
     }
 
-    const y = this.getPusherBaseY(z) + this.pusherBodyHalfHeight + lift;
+    const y = this.getPusherBaseY() + this.pusherBodyHalfHeight;
     const previousPosition = this.pusherBody.position.clone();
-    this.pusherBody.setNextKinematicPose(0, y, z, this.upperDeckTilt);
+    this.pusherBody.setNextKinematicPose(0, y, z, 0);
     this.pusherBody.velocity.set(
       0,
       (y - previousPosition.y) / Math.max(deltaSeconds, 0.0001),
       (z - previousPosition.z) / Math.max(deltaSeconds, 0.0001),
     );
     this.pusherMesh.position.set(0, y, z);
-    this.pusherMesh.rotation.x = this.upperDeckTilt;
   }
 
   private usingTaichiHybrid(): boolean {
@@ -1964,20 +1853,15 @@ export class CoinPusherApp {
       }
 
       const { x, y, z } = item.body.position;
-      if (z < this.upperDeckBackZ - 0.2 || z > this.lowerDeckFrontZ + 0.12) {
+      if (z < this.floorBackZ - 0.2 || z > this.floorFrontZ + 0.12) {
         continue;
       }
       if (Math.abs(x) > this.playfieldWidth / 2 + 0.28) {
         continue;
       }
 
-      const onUpperDeck = z <= this.upperDeckFrontZ + 0.16 && y <= this.getPusherSurfaceY(z) + 0.16;
-      const onLowerDeck =
-        z > this.upperDeckFrontZ + 0.16 &&
-        z < this.lowerDeckFrontZ - 0.08 &&
-        y <= this.getLowerDeckSurfaceY(z) + 0.18;
-
-      if (!onUpperDeck && !onLowerDeck) {
+      const onFloor = z < this.floorFrontZ - 0.08 && y <= this.getFloorSurfaceY() + 0.22;
+      if (!onFloor) {
         continue;
       }
 
@@ -1985,27 +1869,24 @@ export class CoinPusherApp {
       let forwardBias = 0;
 
       const onPusher =
-        onUpperDeck &&
         Math.abs(x) <= this.pusherWidth / 2 + 0.03 &&
         z >= pusherBackZ &&
         z <= pusherFrontZ &&
-        y <= this.getPusherSurfaceY(z) + this.getItemRestOffset(item.type) + 0.14;
+        y <= this.getPusherSurfaceY() + this.getItemRestOffset(item.type) + 0.14;
 
       if (onPusher && Math.abs(pusherVz) > 0.01) {
         const follow = item.type === "chest" ? 0.84 : item.type === "rare" ? 0.9 : 0.94;
         desiredForward = lerpNumber(item.body.velocity.z, pusherVz, follow);
         forwardBias = Math.abs(pusherVz) * 1.35;
-      }
-
-      if (onLowerDeck && Math.abs(x) <= this.playfieldWidth / 2 - 0.16) {
-        const targetVelocity = item.type === "chest" ? 0.055 : item.type === "rare" ? 0.07 : 0.09;
-        desiredForward = Math.max(desiredForward, targetVelocity);
-        forwardBias = Math.max(forwardBias, targetVelocity * 1.25);
-      }
-
-      if (onUpperDeck && !onPusher) {
-        desiredForward = Math.max(desiredForward, 0.018);
-        forwardBias = Math.max(forwardBias, 0.06);
+      } else if (
+        z > pusherFrontZ &&
+        Math.abs(x) <= this.playfieldWidth / 2 - 0.16 &&
+        Math.hypot(item.body.velocity.x, item.body.velocity.z) < 0.04
+      ) {
+        // Only nudge clearly stuck coins; avoid constant floor vibration.
+        const targetVelocity = item.type === "chest" ? 0.03 : item.type === "rare" ? 0.035 : 0.04;
+        desiredForward = targetVelocity;
+        forwardBias = targetVelocity * 0.8;
       }
 
       snapshot.push({
@@ -2092,24 +1973,87 @@ export class CoinPusherApp {
   }
 
   private applyLowerDeckAssist(): void {
+    const floorSurfaceY = this.getFloorSurfaceY();
+    const pusherBackZ = this.pusherBody.position.z - this.pusherDepth / 2 + 0.05;
+    const pusherFrontZ = this.pusherBody.position.z + this.pusherDepth / 2 - 0.05;
+
     for (const item of this.items) {
       if (item.collected) {
         continue;
       }
-      if (item.body.position.z <= this.upperDeckFrontZ + 0.16 || item.body.position.z >= this.lowerDeckFrontZ - 0.08) {
+
+      const { x, y, z } = item.body.position;
+      if (Math.abs(x) > this.playfieldWidth / 2 - 0.12) {
         continue;
       }
-      if (Math.abs(item.body.position.x) > this.playfieldWidth / 2 - 0.16) {
-        continue;
-      }
-      if (item.body.position.y > this.getLowerDeckSurfaceY(item.body.position.z) + 0.18) {
+      if (z < this.floorBackZ - 0.1 || z >= this.floorFrontZ - 0.08) {
         continue;
       }
 
-      const targetVelocity = item.type === "chest" ? 0.055 : item.type === "rare" ? 0.07 : 0.09;
+      const restY = floorSurfaceY + this.getItemRestOffset(item.type);
+      const nearFloor = y <= restY + 0.14;
+      if (!nearFloor) {
+        continue;
+      }
+
+      // Kill contact chatter so resting coins can settle/sleep.
+      if (Math.abs(item.body.velocity.y) < 0.45) {
+        item.body.velocity.y *= 0.35;
+      }
+      if (Math.abs(item.body.velocity.y) < 0.04) {
+        item.body.velocity.y = 0;
+      }
+
+      const horizontalSpeed = Math.hypot(item.body.velocity.x, item.body.velocity.z);
+      const angularSpeed = Math.hypot(
+        item.body.angularVelocity.x,
+        item.body.angularVelocity.y,
+        item.body.angularVelocity.z,
+      );
+
+      if (horizontalSpeed < 0.035 && Math.abs(item.body.velocity.y) < 0.03) {
+        item.body.velocity.x *= 0.7;
+        item.body.velocity.z *= 0.7;
+        if (angularSpeed < 1.2) {
+          item.body.angularVelocity.x *= 0.55;
+          item.body.angularVelocity.y *= 0.55;
+          item.body.angularVelocity.z *= 0.55;
+        }
+        if (horizontalSpeed < 0.012 && angularSpeed < 0.35 && Math.abs(item.body.velocity.y) < 0.02) {
+          item.body.velocity.x = 0;
+          item.body.velocity.z = 0;
+          item.body.velocity.y = 0;
+          item.body.angularVelocity.x = 0;
+          item.body.angularVelocity.y = 0;
+          item.body.angularVelocity.z = 0;
+          item.body.sleep();
+          continue;
+        }
+      }
+
+      // Coins currently on the pusher footprint are handled by pusher assist.
+      const onPusherFootprint =
+        Math.abs(x) <= this.pusherWidth / 2 + 0.03 && z >= pusherBackZ && z <= pusherFrontZ;
+      if (onPusherFootprint) {
+        continue;
+      }
+
+      // Flat floor: only gently unstick coins that are nearly stopped ahead of the pusher.
+      if (z <= pusherFrontZ) {
+        continue;
+      }
+      if (horizontalSpeed > 0.08) {
+        continue;
+      }
+
+      const targetVelocity = item.type === "chest" ? 0.028 : item.type === "rare" ? 0.032 : 0.036;
+      if (item.body.velocity.z >= targetVelocity) {
+        continue;
+      }
+
       item.body.wakeUp();
-      item.body.velocity.z = Math.max(item.body.velocity.z, targetVelocity);
-      item.body.velocity.x *= 0.992;
+      item.body.velocity.z = lerpNumber(item.body.velocity.z, targetVelocity, 0.06);
+      item.body.velocity.x *= 0.98;
     }
   }
 
@@ -2133,9 +2077,9 @@ export class CoinPusherApp {
 
        if (
         Math.abs(item.body.position.x) > this.playfieldWidth / 2 - 0.34 &&
-        item.body.position.z > this.lowerDeckBackZ + 0.95 &&
+        item.body.position.z > this.floorCenterZ + 0.95 &&
         item.body.position.z < this.payoutGapZ - 0.2 &&
-        item.body.position.y < this.getLowerDeckSurfaceY(item.body.position.z) - 0.02
+        item.body.position.y < this.getFloorSurfaceY(item.body.position.z) - 0.02
       ) {
         item.collected = true;
         continue;
@@ -2266,9 +2210,9 @@ export class CoinPusherApp {
       this.pushMessage("Bonus 触发：金币暴雨。");
       for (let i = 0; i < 14; i += 1) {
         this.scheduleAction(i * 120, () => {
-          const spawnZ = THREE.MathUtils.randFloat(this.upperDeckBackZ + 0.35, this.lowerDeckBackZ + 0.5);
+          const spawnZ = THREE.MathUtils.randFloat(this.floorBackZ + 0.35, this.floorCenterZ + 0.5);
           this.spawnItem("coin", THREE.MathUtils.randFloat(-3.4, 3.4), spawnZ, {
-            spawnY: this.getSurfaceYForZ(spawnZ) + 1.8,
+            spawnY: this.getFloorSurfaceY(spawnZ) + 1.8,
           });
         });
       }
@@ -2281,7 +2225,7 @@ export class CoinPusherApp {
         this.scheduleAction(i * 180, () => {
           const spawnZ = THREE.MathUtils.randFloat(-0.2, 2.1);
           this.spawnItem("chest", THREE.MathUtils.randFloat(-1.8, 1.8), spawnZ, {
-            spawnY: this.getSurfaceYForZ(spawnZ) + 1.8,
+            spawnY: this.getFloorSurfaceY(spawnZ) + 1.8,
           });
         });
       }
