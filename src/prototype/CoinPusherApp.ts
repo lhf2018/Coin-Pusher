@@ -81,6 +81,19 @@ export class CoinPusherApp {
   private readonly floorFrontZ = 4.28;
   private readonly floorDepth = this.floorFrontZ - this.floorBackZ;
   private readonly floorCenterZ = (this.floorBackZ + this.floorFrontZ) / 2;
+  /**
+   * Side layout (no orphan strip):
+   * walls cover [back → exit line], narrow ramp opening covers [exit line → front].
+   */
+  private readonly sideRampOpeningWidth = 1.65;
+  private readonly sideRampEndZ = this.floorFrontZ + 0.02;
+  private readonly sideExitLineZ = this.sideRampEndZ - this.sideRampOpeningWidth;
+  private readonly sideWallFrontZ = this.sideExitLineZ;
+  /** Tiny tuck so the ramp top meets the floor without a visible gap. */
+  private readonly sideWingCut = 0.06;
+  private readonly sideRampOutward = 1.85;
+  private readonly sideRampAngle = 0.36;
+  private readonly sideWallThickness = 0.34;
   private readonly payoutGapZ = 4.5;
   private readonly collectionCenterZ = 5.1;
   private readonly collectionDepth = 1.5;
@@ -333,48 +346,89 @@ export class CoinPusherApp {
   }
 
   private createTable(): void {
+    // Keep the shell below the side-exit ramps so they don't pierce the cabinet.
     const cabinet = new THREE.Mesh(
-      new THREE.BoxGeometry(TABLE.width + 0.9, 2.7, TABLE.depth + 1.1),
+      new THREE.BoxGeometry(TABLE.width + 0.9, 2.2, TABLE.depth + 1.1),
       new THREE.MeshStandardMaterial({
         color: "#0b1826",
         metalness: 0.44,
         roughness: 0.62,
       }),
     );
-    cabinet.position.set(0, -1.42, 0.34);
+    cabinet.position.set(0, -1.72, 0.34);
     cabinet.castShadow = true;
     cabinet.receiveShadow = true;
     this.scene.add(cabinet);
 
-    const trimDeck = new THREE.Mesh(
-      new THREE.BoxGeometry(TABLE.width + 0.22, 0.2, TABLE.depth + 0.38),
+    // Trim follows the playfield footprint and stops at the exit line on the sides,
+    // leaving open air for the ramps.
+    const rearTrimDepth = this.sideExitLineZ - this.floorBackZ + 0.35;
+    const rearTrimCenterZ = (this.floorBackZ - 0.12 + this.sideExitLineZ) / 2;
+    const rearTrim = new THREE.Mesh(
+      new THREE.BoxGeometry(TABLE.width + 0.22, 0.2, rearTrimDepth),
       new THREE.MeshStandardMaterial({
         color: "#173349",
         metalness: 0.82,
         roughness: 0.2,
       }),
     );
-    trimDeck.position.set(0, -0.04, 0.14);
-    trimDeck.receiveShadow = true;
-    this.scene.add(trimDeck);
+    rearTrim.position.set(0, -0.04, rearTrimCenterZ);
+    rearTrim.receiveShadow = true;
+    this.scene.add(rearTrim);
 
-    const floor = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth, this.floorThickness, this.floorDepth),
+    const frontTrimWidth = this.playfieldWidth - this.sideWingCut * 2 + 0.2;
+    const frontTrimDepth = this.floorFrontZ - this.sideExitLineZ + 0.45;
+    const frontTrimCenterZ = (this.sideExitLineZ + this.floorFrontZ) / 2 + 0.08;
+    const frontTrim = new THREE.Mesh(
+      new THREE.BoxGeometry(frontTrimWidth, 0.2, frontTrimDepth),
       new THREE.MeshStandardMaterial({
-        color: "#1d455f",
-        emissive: "#102c3e",
-        metalness: 0.68,
-        roughness: 0.28,
+        color: "#173349",
+        metalness: 0.82,
+        roughness: 0.2,
       }),
     );
-    floor.position.set(0, this.floorY, this.floorCenterZ);
-    floor.castShadow = true;
-    floor.receiveShadow = true;
-    this.scene.add(floor);
+    frontTrim.position.set(0, -0.04, frontTrimCenterZ);
+    frontTrim.receiveShadow = true;
+    this.scene.add(frontTrim);
 
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      color: "#1d455f",
+      emissive: "#102c3e",
+      metalness: 0.68,
+      roughness: 0.28,
+    });
+
+    // Rear playfield stays full width up to the shared exit line.
+    const rearFloorDepth = this.sideExitLineZ - this.floorBackZ;
+    const rearFloorCenterZ = (this.floorBackZ + this.sideExitLineZ) / 2;
+    const frontFloorWidth = this.playfieldWidth - this.sideWingCut * 2;
+    const frontFloorDepth = this.floorFrontZ - this.sideExitLineZ;
+    const frontFloorCenterZ = (this.sideExitLineZ + this.floorFrontZ) / 2;
+
+    const rearFloor = new THREE.Mesh(
+      new THREE.BoxGeometry(this.playfieldWidth, this.floorThickness, rearFloorDepth),
+      floorMaterial,
+    );
+    rearFloor.position.set(0, this.floorY, rearFloorCenterZ);
+    rearFloor.castShadow = true;
+    rearFloor.receiveShadow = true;
+    this.scene.add(rearFloor);
     this.addStaticBody(
-      vec3(this.playfieldWidth / 2, this.floorThickness / 2, this.floorDepth / 2),
-      vec3(0, this.floorY, this.floorCenterZ),
+      vec3(this.playfieldWidth / 2, this.floorThickness / 2, rearFloorDepth / 2),
+      vec3(0, this.floorY, rearFloorCenterZ),
+    );
+
+    const frontFloor = new THREE.Mesh(
+      new THREE.BoxGeometry(frontFloorWidth, this.floorThickness, frontFloorDepth),
+      floorMaterial,
+    );
+    frontFloor.position.set(0, this.floorY, frontFloorCenterZ);
+    frontFloor.castShadow = true;
+    frontFloor.receiveShadow = true;
+    this.scene.add(frontFloor);
+    this.addStaticBody(
+      vec3(frontFloorWidth / 2, this.floorThickness / 2, frontFloorDepth / 2),
+      vec3(0, this.floorY, frontFloorCenterZ),
     );
 
     const railMaterial = new THREE.MeshPhysicalMaterial({
@@ -385,52 +439,89 @@ export class CoinPusherApp {
       clearcoat: 0.18,
       clearcoatRoughness: 0.35,
     });
+    const sideTrimMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#9eb8c9",
+      emissive: "#2a4050",
+      metalness: 0.82,
+      roughness: 0.22,
+      clearcoat: 0.3,
+      clearcoatRoughness: 0.18,
+    });
 
-    const sideWallDepth = this.floorDepth + 0.35;
-    const sideWallCenterZ = this.floorCenterZ;
+    const sideWallBackZ = this.floorBackZ - 0.18;
+    const sideWallDepth = this.sideExitLineZ - sideWallBackZ;
+    const sideWallCenterZ = (sideWallBackZ + this.sideExitLineZ) / 2;
     const sideWallBaseY = this.getFloorSurfaceY();
+    const sideWallInnerX = this.playfieldWidth / 2 + 0.02;
     for (const direction of [-1, 1] as const) {
+      const sideWallCenterX = direction * (sideWallInnerX + this.sideWallThickness / 2);
       const sideWall = new THREE.Mesh(
-        new THREE.BoxGeometry(0.16, 1.28, sideWallDepth),
+        new THREE.BoxGeometry(this.sideWallThickness, 1.28, sideWallDepth),
         railMaterial,
       );
-      sideWall.position.set(
-        direction * (this.playfieldWidth / 2 + 0.08),
-        sideWallBaseY + 0.52,
-        sideWallCenterZ,
-      );
+      sideWall.position.set(sideWallCenterX, sideWallBaseY + 0.52, sideWallCenterZ);
       sideWall.castShadow = true;
       sideWall.receiveShadow = true;
       this.scene.add(sideWall);
 
       this.addStaticBody(
-        vec3(0.08, 0.64, sideWallDepth / 2),
-        vec3(
-          direction * (this.playfieldWidth / 2 + 0.08),
-          sideWallBaseY + 0.52,
-          sideWallCenterZ,
-        ),
+        vec3(this.sideWallThickness / 2, 0.64, sideWallDepth / 2),
+        vec3(sideWallCenterX, sideWallBaseY + 0.52, sideWallCenterZ),
       );
 
       const sideTrim = new THREE.Mesh(
-        new THREE.BoxGeometry(0.05, 1.18, sideWallDepth + 0.02),
-        new THREE.MeshPhysicalMaterial({
-          color: "#9eb8c9",
-          emissive: "#2a4050",
-          metalness: 0.82,
-          roughness: 0.22,
-          clearcoat: 0.3,
-          clearcoatRoughness: 0.18,
-        }),
+        new THREE.BoxGeometry(0.06, 1.18, sideWallDepth),
+        sideTrimMaterial,
       );
       sideTrim.position.set(
-        direction * (this.playfieldWidth / 2 + 0.01),
+        direction * (sideWallInnerX + 0.01),
         sideWallBaseY + 0.5,
         sideWallCenterZ,
       );
       sideTrim.castShadow = true;
       sideTrim.receiveShadow = true;
       this.scene.add(sideTrim);
+    }
+
+    // Side ramps begin on the wall-end line; top edge tucked under the floor for a seamless join.
+    const rampDepth = this.sideRampEndZ - this.sideExitLineZ;
+    const rampCenterZ = (this.sideExitLineZ + this.sideRampEndZ) / 2;
+    const floorSurfaceY = this.getFloorSurfaceY();
+    const rampThickness = this.floorThickness;
+    const angle = this.sideRampAngle;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    const cabinetClearanceY = -0.52;
+    const maxDrop = Math.max(0.2, floorSurfaceY - cabinetClearanceY);
+    const safeOutward = Math.min(this.sideRampOutward, maxDrop / Math.max(0.2, sinA));
+    const rampOverlap = 0.16;
+    const rampHingeX = this.playfieldWidth / 2;
+    const rampMaterial = floorMaterial.clone();
+    rampMaterial.emissive = new THREE.Color("#123040");
+    for (const direction of [-1, 1] as const) {
+      const halfW = safeOutward / 2;
+      const halfT = rampThickness / 2;
+      // Tuck under the deck edge so the top surfaces meet without a gap.
+      const edgeX = direction * (rampHingeX - rampOverlap);
+      const centerX = edgeX + direction * (halfW * cosA - halfT * sinA);
+      const centerY = floorSurfaceY - halfW * sinA - halfT * cosA;
+
+      const ramp = new THREE.Mesh(
+        new THREE.BoxGeometry(safeOutward, rampThickness, rampDepth),
+        rampMaterial,
+      );
+      ramp.position.set(centerX, centerY, rampCenterZ);
+      ramp.rotation.z = -direction * angle;
+      ramp.castShadow = true;
+      ramp.receiveShadow = true;
+      this.scene.add(ramp);
+
+      this.addStaticBody(
+        vec3(halfW, halfT, rampDepth / 2),
+        vec3(centerX, centerY, rampCenterZ),
+        0,
+        -direction * angle,
+      );
     }
 
     const backWall = new THREE.Mesh(
@@ -453,7 +544,7 @@ export class CoinPusherApp {
 
     const deckFrontY = this.getFloorSurfaceY();
     const cliffEdge = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth - 0.12, 0.12, 0.18),
+      new THREE.BoxGeometry(frontFloorWidth - 0.08, 0.12, 0.18),
       new THREE.MeshPhysicalMaterial({
         color: "#c5d7e4",
         emissive: "#2f4a5d",
@@ -469,7 +560,7 @@ export class CoinPusherApp {
     this.scene.add(cliffEdge);
 
     const cliffShadow = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.playfieldWidth - 0.2, 0.42),
+      new THREE.PlaneGeometry(frontFloorWidth - 0.12, 0.42),
       new THREE.MeshBasicMaterial({
         color: "#02060c",
         transparent: true,
@@ -479,25 +570,6 @@ export class CoinPusherApp {
     cliffShadow.position.set(0, deckFrontY - 0.18, this.floorFrontZ + 0.28);
     cliffShadow.rotation.x = -Math.PI / 2;
     this.scene.add(cliffShadow);
-
-    const sideDrainMaterial = new THREE.MeshBasicMaterial({
-      color: "#081828",
-      transparent: true,
-      opacity: 0.34,
-    });
-    for (const direction of [-1, 1] as const) {
-      const sideDrain = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.5, 2.16),
-        sideDrainMaterial,
-      );
-      sideDrain.position.set(
-        direction * (this.playfieldWidth / 2 - 0.18),
-        this.getFloorSurfaceY() + 0.008,
-        2.65,
-      );
-      sideDrain.rotation.x = -Math.PI / 2;
-      this.scene.add(sideDrain);
-    }
 
     const collectionWallMaterial = new THREE.MeshStandardMaterial({
       color: "#6f93ab",
@@ -849,11 +921,13 @@ export class CoinPusherApp {
     this.scene.add(frontGlass);
 
     for (const direction of [-1, 1] as const) {
+      const glassDepth = this.sideExitLineZ - this.floorBackZ + 0.4;
+      const glassCenterZ = (this.floorBackZ + this.sideExitLineZ) / 2;
       const glassSide = new THREE.Mesh(
-        new THREE.PlaneGeometry(TABLE.depth - 0.7, 2.7),
+        new THREE.PlaneGeometry(glassDepth, 2.7),
         glassMaterial,
       );
-      glassSide.position.set(direction * (this.playfieldWidth / 2 + 0.26), 1.02, 0.48);
+      glassSide.position.set(direction * (this.playfieldWidth / 2 + 0.26), 1.02, glassCenterZ);
       glassSide.rotation.y = direction * (Math.PI / 2);
       this.scene.add(glassSide);
     }
@@ -1211,11 +1285,12 @@ export class CoinPusherApp {
     this.scene.add(plaque);
   }
 
-  private addStaticBody(halfExtents: Vec3, position: Vec3, rotationX = 0): void {
+  private addStaticBody(halfExtents: Vec3, position: Vec3, rotationX = 0, rotationZ = 0): void {
     this.physics.createStaticBox({
       halfExtents,
       position,
       rotationX,
+      rotationZ,
     });
   }
 
@@ -2036,13 +2111,14 @@ export class CoinPusherApp {
         continue;
       }
 
-       if (
-        Math.abs(item.body.position.x) > this.playfieldWidth / 2 - 0.34 &&
-        item.body.position.z > this.floorCenterZ + 0.95 &&
-        item.body.position.z < this.payoutGapZ - 0.2 &&
-        item.body.position.y < this.getFloorSurfaceY(item.body.position.z) - 0.02
+      if (
+        Math.abs(item.body.position.x) > this.playfieldWidth / 2 - 0.12 &&
+        item.body.position.z > this.sideExitLineZ - 0.15 &&
+        item.body.position.z < this.sideRampEndZ + 0.35 &&
+        item.body.position.y < this.getFloorSurfaceY() - 0.08
       ) {
-        item.collected = true;
+        const slot = this.getSlotType(item.body.position.x);
+        this.collectItem(item, slot);
         continue;
       }
 
