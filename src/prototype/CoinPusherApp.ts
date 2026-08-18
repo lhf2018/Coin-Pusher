@@ -91,13 +91,22 @@ export class CoinPusherApp {
   private readonly collectionDepth = 1.5;
   private readonly collectionFloorY = -0.24;
   private readonly slotSplitX = 1.55;
-  private readonly pusherWidth = 6.9;
+  private readonly pusherApertureClearance = 0.012;
+  private readonly pusherWidth = this.playfieldWidth - this.pusherApertureClearance * 2;
   private readonly pusherDepth = 3.72;
-  private readonly pusherBodyHalfHeight = 0.11;
+  private readonly pusherBodyHalfHeight = 0.28;
   private readonly pusherHoverGap = 0.01;
-  private readonly pusherStartZ = -2.05;
-  private readonly pusherEndZ = -1.24;
-  private readonly pusherLiftAmount = 0.06;
+  private readonly pusherFaceThickness = 0.28;
+  private readonly pusherRemainInside = 0.55;
+  private readonly pusherTravel = 0.78;
+  private readonly pusherApertureZ = this.upperDeckBackZ + 0.42;
+  private readonly pusherEndZ =
+    this.pusherApertureZ -
+    this.pusherFaceThickness / 2 -
+    this.pusherRemainInside +
+    this.pusherDepth / 2;
+  private readonly pusherStartZ = this.pusherEndZ - this.pusherTravel;
+  private readonly pusherLiftAmount = 0.008;
   private autoDropElapsedMs = 0;
   private pusherTime = 0;
   private lastFpsSampleTime = performance.now();
@@ -166,6 +175,7 @@ export class CoinPusherApp {
       this.physicsReady = true;
       this.createTable();
       this.createPusher();
+      this.createPusherTunnel();
       this.createDecor();
       this.seedBoard();
       this.physicsBackend = "rapier";
@@ -524,35 +534,6 @@ export class CoinPusherApp {
     lowerBackGuide.rotation.x = -Math.PI / 2 + this.lowerDeckTilt;
     this.scene.add(lowerBackGuide);
 
-    for (const direction of [-1, 1] as const) {
-      const rearGuide = new THREE.Mesh(
-        new THREE.BoxGeometry(0.34, 0.42, 0.42),
-        new THREE.MeshStandardMaterial({
-          color: "#22516d",
-          metalness: 0.6,
-          roughness: 0.34,
-        }),
-      );
-      rearGuide.position.set(
-        direction * (this.playfieldWidth / 2 - 0.28),
-        this.getUpperDeckSurfaceY(this.upperDeckBackZ + 0.08) + 0.18,
-        this.upperDeckBackZ + 0.08,
-      );
-      rearGuide.rotation.x = this.upperDeckTilt;
-      rearGuide.castShadow = true;
-      rearGuide.receiveShadow = true;
-      this.scene.add(rearGuide);
-      this.addStaticBody(
-        vec3(0.17, 0.21, 0.21),
-        vec3(
-          direction * (this.playfieldWidth / 2 - 0.28),
-          this.getUpperDeckSurfaceY(this.upperDeckBackZ + 0.08) + 0.18,
-          this.upperDeckBackZ + 0.08,
-        ),
-        this.upperDeckTilt,
-      );
-    }
-
     const backWall = new THREE.Mesh(
       new THREE.BoxGeometry(this.playfieldWidth + 0.55, 3.8, 0.28),
       new THREE.MeshStandardMaterial({
@@ -708,11 +689,6 @@ export class CoinPusherApp {
 
   private createPusher(): void {
     this.pusherMesh = new THREE.Group();
-    const pusherWallWidth = this.pusherWidth - 0.36;
-    const pusherWallHeight = 0.72;
-    const pusherWallDepth = 0.24;
-    const pusherWallOffsetY = this.pusherBodyHalfHeight + pusherWallHeight / 2 - 0.05;
-    const pusherWallOffsetZ = -this.pusherDepth / 2 + pusherWallDepth / 2 + 0.04;
 
     const platform = new THREE.Mesh(
       new THREE.BoxGeometry(this.pusherWidth, this.pusherBodyHalfHeight * 2, this.pusherDepth),
@@ -728,48 +704,6 @@ export class CoinPusherApp {
     platform.castShadow = true;
     platform.receiveShadow = true;
     this.pusherMesh.add(platform);
-
-    const platformUnderside = new THREE.Mesh(
-      new THREE.BoxGeometry(this.pusherWidth - 0.14, this.pusherBodyHalfHeight * 0.72, this.pusherDepth - 0.18),
-      new THREE.MeshStandardMaterial({
-        color: "#5c7387",
-        emissive: "#263746",
-        metalness: 0.34,
-        roughness: 0.56,
-      }),
-    );
-    platformUnderside.position.y = -this.pusherBodyHalfHeight * 0.45;
-    platformUnderside.castShadow = true;
-    platformUnderside.receiveShadow = true;
-    this.pusherMesh.add(platformUnderside);
-
-    const pusherWall = new THREE.Mesh(
-      new THREE.BoxGeometry(pusherWallWidth, pusherWallHeight, pusherWallDepth),
-      new THREE.MeshPhysicalMaterial({
-        color: "#c9d8e3",
-        emissive: "#385063",
-        metalness: 0.82,
-        roughness: 0.18,
-        clearcoat: 0.24,
-        clearcoatRoughness: 0.16,
-      }),
-    );
-    pusherWall.position.set(0, pusherWallOffsetY, pusherWallOffsetZ);
-    pusherWall.castShadow = true;
-    pusherWall.receiveShadow = true;
-    this.pusherMesh.add(pusherWall);
-
-    const pusherWallFace = new THREE.Mesh(
-      new THREE.BoxGeometry(pusherWallWidth - 0.62, pusherWallHeight - 0.18, 0.05),
-      new THREE.MeshStandardMaterial({
-        color: "#eef5fb",
-        emissive: "#5f8199",
-        metalness: 0.46,
-        roughness: 0.2,
-      }),
-    );
-    pusherWallFace.position.set(0, 0, pusherWallDepth / 2 + 0.021);
-    pusherWall.add(pusherWallFace);
 
     this.pusherMesh.position.set(
       0,
@@ -789,12 +723,164 @@ export class CoinPusherApp {
       [
         {
           halfExtents: vec3(this.pusherWidth / 2, this.pusherBodyHalfHeight, this.pusherDepth / 2),
-        },
-        {
-          halfExtents: vec3(pusherWallWidth / 2, pusherWallHeight / 2, pusherWallDepth / 2),
-          offset: vec3(0, pusherWallOffsetY, pusherWallOffsetZ),
+          friction: 0.92,
         },
       ],
+    );
+  }
+
+  private createPusherTunnel(): void {
+    const clearance = this.pusherApertureClearance;
+    const pusherHeight = this.pusherBodyHalfHeight * 2;
+    const holeWidth = this.pusherWidth + clearance * 2;
+    const holeHeight = pusherHeight + clearance * 2;
+    const faceThickness = this.pusherFaceThickness;
+    const apertureZ = this.pusherApertureZ;
+    const apertureInnerZ = apertureZ - faceThickness / 2;
+    const startRearZ = this.pusherStartZ - this.pusherDepth / 2;
+    const tunnelDepth = Math.max(1.2, apertureInnerZ - startRearZ + 0.35);
+    const tunnelCenterZ = apertureInnerZ - tunnelDepth / 2;
+    const holeCenterY = this.getPusherBaseY(apertureZ) + this.pusherBodyHalfHeight;
+    const wallWidth = this.playfieldWidth + 0.55;
+    const wallHeight = 2.85;
+    const wallCenterY = holeCenterY + wallHeight * 0.18;
+    const holeOffsetY = holeCenterY - wallCenterY;
+
+    const shellMaterial = new THREE.MeshStandardMaterial({
+      color: "#2d4b60",
+      emissive: "#132636",
+      metalness: 0.48,
+      roughness: 0.42,
+    });
+    const faceMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#5f7f95",
+      emissive: "#1d3344",
+      metalness: 0.68,
+      roughness: 0.28,
+      clearcoat: 0.16,
+      clearcoatRoughness: 0.22,
+      side: THREE.DoubleSide,
+    });
+    const cavityMaterial = new THREE.MeshStandardMaterial({
+      color: "#050b12",
+      emissive: "#020508",
+      metalness: 0.08,
+      roughness: 0.92,
+    });
+
+    const addTunnelPart = (
+      size: [number, number, number],
+      position: THREE.Vector3,
+      material: THREE.Material,
+      withPhysics = true,
+    ): void => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+      mesh.position.copy(position);
+      mesh.rotation.x = this.upperDeckTilt;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+      if (withPhysics) {
+        this.addStaticBody(
+          vec3(size[0] / 2, size[1] / 2, size[2] / 2),
+          vec3(position.x, position.y, position.z),
+          this.upperDeckTilt,
+        );
+      }
+    };
+
+    // One continuous wall panel with a rectangular aperture cut out.
+    const wallShape = new THREE.Shape();
+    wallShape.moveTo(-wallWidth / 2, -wallHeight / 2);
+    wallShape.lineTo(wallWidth / 2, -wallHeight / 2);
+    wallShape.lineTo(wallWidth / 2, wallHeight / 2);
+    wallShape.lineTo(-wallWidth / 2, wallHeight / 2);
+    wallShape.lineTo(-wallWidth / 2, -wallHeight / 2);
+
+    const holePath = new THREE.Path();
+    holePath.moveTo(-holeWidth / 2, -holeHeight / 2 + holeOffsetY);
+    holePath.lineTo(-holeWidth / 2, holeHeight / 2 + holeOffsetY);
+    holePath.lineTo(holeWidth / 2, holeHeight / 2 + holeOffsetY);
+    holePath.lineTo(holeWidth / 2, -holeHeight / 2 + holeOffsetY);
+    holePath.lineTo(-holeWidth / 2, -holeHeight / 2 + holeOffsetY);
+    wallShape.holes.push(holePath);
+
+    const wallGeometry = new THREE.ExtrudeGeometry(wallShape, {
+      depth: faceThickness,
+      bevelEnabled: false,
+      curveSegments: 1,
+    });
+    wallGeometry.translate(0, 0, -faceThickness / 2);
+    const apertureWall = new THREE.Mesh(wallGeometry, faceMaterial);
+    apertureWall.position.set(0, wallCenterY, apertureZ);
+    apertureWall.rotation.x = this.upperDeckTilt;
+    apertureWall.castShadow = true;
+    apertureWall.receiveShadow = true;
+    this.scene.add(apertureWall);
+
+    // Physics colliders around the hole (visual wall is a single mesh).
+    const sideWidth = (wallWidth - holeWidth) / 2;
+    const topHeight = wallHeight / 2 - (holeOffsetY + holeHeight / 2);
+    const bottomHeight = wallHeight / 2 + (holeOffsetY - holeHeight / 2);
+    const sideCenterX = holeWidth / 2 + sideWidth / 2;
+    const topCenterY = holeCenterY + holeHeight / 2 + topHeight / 2;
+    const bottomCenterY = holeCenterY - holeHeight / 2 - bottomHeight / 2;
+
+    this.addStaticBody(
+      vec3(sideWidth / 2, holeHeight / 2, faceThickness / 2),
+      vec3(-sideCenterX, holeCenterY, apertureZ),
+      this.upperDeckTilt,
+    );
+    this.addStaticBody(
+      vec3(sideWidth / 2, holeHeight / 2, faceThickness / 2),
+      vec3(sideCenterX, holeCenterY, apertureZ),
+      this.upperDeckTilt,
+    );
+    this.addStaticBody(
+      vec3(holeWidth / 2, topHeight / 2, faceThickness / 2),
+      vec3(0, topCenterY, apertureZ),
+      this.upperDeckTilt,
+    );
+    if (bottomHeight > 0.04) {
+      this.addStaticBody(
+        vec3(holeWidth / 2, bottomHeight / 2, faceThickness / 2),
+        vec3(0, bottomCenterY, apertureZ),
+        this.upperDeckTilt,
+      );
+    }
+
+    // Tunnel shell behind the wall so the pusher stays recessed.
+    const shellSideWidth = Math.max(0.22, (wallWidth - holeWidth) / 2);
+    addTunnelPart(
+      [wallWidth, 0.26, tunnelDepth],
+      new THREE.Vector3(0, holeCenterY + holeHeight / 2 + 0.13, tunnelCenterZ),
+      shellMaterial,
+    );
+    addTunnelPart(
+      [wallWidth, Math.max(0.16, bottomHeight), tunnelDepth],
+      new THREE.Vector3(0, bottomCenterY, tunnelCenterZ),
+      shellMaterial,
+    );
+    for (const direction of [-1, 1] as const) {
+      addTunnelPart(
+        [shellSideWidth, holeHeight, tunnelDepth],
+        new THREE.Vector3(direction * (holeWidth / 2 + shellSideWidth / 2), holeCenterY, tunnelCenterZ),
+        shellMaterial,
+      );
+    }
+
+    const cavity = new THREE.Mesh(
+      new THREE.PlaneGeometry(holeWidth - clearance, holeHeight - clearance),
+      cavityMaterial,
+    );
+    cavity.position.set(0, holeCenterY, apertureInnerZ - 0.03);
+    cavity.rotation.x = this.upperDeckTilt;
+    this.scene.add(cavity);
+
+    addTunnelPart(
+      [wallWidth + 0.08, wallHeight + 0.12, 0.24],
+      new THREE.Vector3(0, wallCenterY, tunnelCenterZ - tunnelDepth / 2 - 0.08),
+      shellMaterial,
     );
   }
 
@@ -810,138 +896,6 @@ export class CoinPusherApp {
     );
     backPanel.position.set(0, 1.9, this.upperDeckBackZ - 0.46);
     this.scene.add(backPanel);
-
-    const aura = new THREE.Mesh(
-      new THREE.CircleGeometry(2.55, 48),
-      new THREE.MeshBasicMaterial({
-        color: "#ff7d36",
-        transparent: true,
-        opacity: 0.12,
-      }),
-    );
-    aura.position.set(0, 2.02, this.upperDeckBackZ - 0.4);
-    this.scene.add(aura);
-
-    const chamberBaseY = this.getUpperDeckSurfaceY(this.upperDeckBackZ + 0.12);
-    const chamberShadow = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.pusherWidth - 0.72, 0.96),
-      new THREE.MeshBasicMaterial({
-        color: "#02060c",
-        transparent: true,
-        opacity: 0.9,
-      }),
-    );
-    chamberShadow.position.set(0, chamberBaseY + 0.56, this.upperDeckBackZ - 0.28);
-    this.scene.add(chamberShadow);
-
-    const chamberHousing = new THREE.Mesh(
-      new THREE.BoxGeometry(this.pusherWidth + 0.78, 1.28, 0.42),
-      new THREE.MeshStandardMaterial({
-        color: "#314f64",
-        emissive: "#15293a",
-        metalness: 0.42,
-        roughness: 0.54,
-      }),
-    );
-    chamberHousing.position.set(0, chamberBaseY + 0.58, this.upperDeckBackZ - 0.5);
-    chamberHousing.castShadow = true;
-    chamberHousing.receiveShadow = true;
-    this.scene.add(chamberHousing);
-
-    const chamberOpening = new THREE.Mesh(
-      new THREE.PlaneGeometry(this.pusherWidth - 0.9, 0.56),
-      new THREE.MeshBasicMaterial({
-        color: "#02060b",
-      }),
-    );
-    chamberOpening.position.set(0, chamberBaseY + 0.54, this.upperDeckBackZ - 0.28);
-    this.scene.add(chamberOpening);
-
-    const feedLane = new THREE.Mesh(
-      new THREE.BoxGeometry(this.pusherWidth - 0.44, 0.08, 1.08),
-      new THREE.MeshStandardMaterial({
-        color: "#67849a",
-        emissive: "#253949",
-        metalness: 0.7,
-        roughness: 0.2,
-      }),
-    );
-    feedLane.position.set(0, this.getUpperDeckSurfaceY(this.upperDeckBackZ + 0.46) + 0.05, this.upperDeckBackZ + 0.46);
-    feedLane.rotation.x = this.upperDeckTilt;
-    feedLane.castShadow = true;
-    feedLane.receiveShadow = true;
-    this.scene.add(feedLane);
-
-    const tunnelMaterial = new THREE.MeshStandardMaterial({
-      color: "#1d3648",
-      emissive: "#0b1722",
-      metalness: 0.52,
-      roughness: 0.34,
-    });
-
-    const tunnelRoof = new THREE.Mesh(
-      new THREE.BoxGeometry(this.pusherWidth + 0.36, 0.18, 1.2),
-      tunnelMaterial,
-    );
-    tunnelRoof.position.set(0, chamberBaseY + 1.1, this.upperDeckBackZ - 0.02);
-    tunnelRoof.rotation.x = this.upperDeckTilt;
-    tunnelRoof.castShadow = true;
-    tunnelRoof.receiveShadow = true;
-    this.scene.add(tunnelRoof);
-    this.addStaticBody(
-      vec3((this.pusherWidth + 0.36) / 2, 0.09, 0.6),
-      vec3(0, chamberBaseY + 1.1, this.upperDeckBackZ - 0.02),
-      this.upperDeckTilt,
-    );
-
-    for (const direction of [-1, 1] as const) {
-      const tunnelSide = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.96, 1.24), tunnelMaterial);
-      tunnelSide.position.set(
-        direction * (this.pusherWidth / 2 + 0.1),
-        chamberBaseY + 0.6,
-        this.upperDeckBackZ - 0.02,
-      );
-      tunnelSide.rotation.x = this.upperDeckTilt;
-      tunnelSide.castShadow = true;
-      tunnelSide.receiveShadow = true;
-      this.scene.add(tunnelSide);
-      this.addStaticBody(
-        vec3(0.1, 0.48, 0.62),
-        vec3(
-          direction * (this.pusherWidth / 2 + 0.1),
-          chamberBaseY + 0.6,
-          this.upperDeckBackZ - 0.02,
-        ),
-        this.upperDeckTilt,
-      );
-    }
-
-    const dropChute = new THREE.Mesh(
-      new THREE.BoxGeometry(3.25, 0.72, 1.18),
-      new THREE.MeshStandardMaterial({
-        color: "#2b4f66",
-        emissive: "#102536",
-        metalness: 0.74,
-        roughness: 0.24,
-      }),
-    );
-    dropChute.position.set(0, 1.96, this.upperDeckBackZ + 0.52);
-    dropChute.rotation.x = -0.2;
-    dropChute.castShadow = true;
-    this.scene.add(dropChute);
-
-    const chuteLip = new THREE.Mesh(
-      new THREE.BoxGeometry(2.7, 0.2, 0.34),
-      new THREE.MeshStandardMaterial({
-        color: "#ffd284",
-        emissive: "#6f430d",
-        metalness: 0.82,
-        roughness: 0.18,
-      }),
-    );
-    chuteLip.position.set(0, 1.62, this.upperDeckBackZ + 1.02);
-    chuteLip.castShadow = true;
-    this.scene.add(chuteLip);
 
     const glassMaterial = new THREE.MeshPhysicalMaterial({
       color: "#b7efff",
@@ -2000,9 +1954,9 @@ export class CoinPusherApp {
 
   private buildTaichiAssistSnapshot(): TaichiAssistSnapshotItem[] {
     const snapshot: TaichiAssistSnapshotItem[] = [];
-    const pusherBackZ = this.pusherBody.position.z - this.pusherDepth / 2 + 0.08;
-    const pusherFrontZ = this.pusherBody.position.z + this.pusherDepth / 2 - 0.08;
-    const pusherIsAdvancing = this.pusherBody.velocity.z > 0.18;
+    const pusherBackZ = this.pusherBody.position.z - this.pusherDepth / 2 + 0.05;
+    const pusherFrontZ = this.pusherBody.position.z + this.pusherDepth / 2 - 0.05;
+    const pusherVz = this.pusherBody.velocity.z;
 
     for (const item of this.items) {
       if (item.collected) {
@@ -2030,17 +1984,17 @@ export class CoinPusherApp {
       let desiredForward = 0;
       let forwardBias = 0;
 
-      if (
-        pusherIsAdvancing &&
+      const onPusher =
         onUpperDeck &&
-        Math.abs(x) <= this.pusherWidth / 2 + 0.08 &&
+        Math.abs(x) <= this.pusherWidth / 2 + 0.03 &&
         z >= pusherBackZ &&
-        z <= pusherFrontZ
-      ) {
-        const velocityBoost = item.type === "chest" ? 0.82 : item.type === "rare" ? 0.92 : 1;
-        const targetVelocity = Math.min(0.9, Math.max(0.08, this.pusherBody.velocity.z * 0.055 * velocityBoost));
-        desiredForward = Math.max(desiredForward, targetVelocity);
-        forwardBias = Math.max(forwardBias, targetVelocity * 1.6);
+        z <= pusherFrontZ &&
+        y <= this.getPusherSurfaceY(z) + this.getItemRestOffset(item.type) + 0.14;
+
+      if (onPusher && Math.abs(pusherVz) > 0.01) {
+        const follow = item.type === "chest" ? 0.84 : item.type === "rare" ? 0.9 : 0.94;
+        desiredForward = lerpNumber(item.body.velocity.z, pusherVz, follow);
+        forwardBias = Math.abs(pusherVz) * 1.35;
       }
 
       if (onLowerDeck && Math.abs(x) <= this.playfieldWidth / 2 - 0.16) {
@@ -2049,7 +2003,7 @@ export class CoinPusherApp {
         forwardBias = Math.max(forwardBias, targetVelocity * 1.25);
       }
 
-      if (onUpperDeck) {
+      if (onUpperDeck && !onPusher) {
         desiredForward = Math.max(desiredForward, 0.018);
         forwardBias = Math.max(forwardBias, 0.06);
       }
@@ -2099,32 +2053,41 @@ export class CoinPusherApp {
   }
 
   private applyPusherAssist(): void {
-    if (this.pusherBody.velocity.z <= 0.18) {
+    const pusherVz = this.pusherBody.velocity.z;
+    const pusherVy = this.pusherBody.velocity.y;
+    if (Math.abs(pusherVz) < 0.01 && Math.abs(pusherVy) < 0.01) {
       return;
     }
 
-    const pusherBackZ = this.pusherBody.position.z - this.pusherDepth / 2 + 0.08;
-    const pusherFrontZ = this.pusherBody.position.z + this.pusherDepth / 2 - 0.08;
+    const pusherBackZ = this.pusherBody.position.z - this.pusherDepth / 2 + 0.05;
+    const pusherFrontZ = this.pusherBody.position.z + this.pusherDepth / 2 - 0.05;
 
     for (const item of this.items) {
       if (item.collected) {
         continue;
       }
-      if (Math.abs(item.body.position.x) > this.pusherWidth / 2 + 0.08) {
+      if (Math.abs(item.body.position.x) > this.pusherWidth / 2 + 0.03) {
         continue;
       }
       if (item.body.position.z < pusherBackZ || item.body.position.z > pusherFrontZ) {
         continue;
       }
-      if (item.body.position.y > this.getPusherSurfaceY(item.body.position.z) + 0.16) {
+
+      const surfaceY = this.getPusherSurfaceY(item.body.position.z);
+      const restY = surfaceY + this.getItemRestOffset(item.type);
+      if (item.body.position.y > restY + 0.14) {
+        continue;
+      }
+      if (item.body.position.y < restY - 0.1) {
         continue;
       }
 
-      const velocityBoost = item.type === "chest" ? 0.82 : item.type === "rare" ? 0.92 : 1;
-      const targetVelocity = Math.min(0.9, Math.max(0.08, this.pusherBody.velocity.z * 0.055 * velocityBoost));
+      // Coins resting on the pusher should ride with it.
+      const followZ = item.type === "chest" ? 0.84 : item.type === "rare" ? 0.9 : 0.94;
       item.body.wakeUp();
-      item.body.velocity.z = Math.max(item.body.velocity.z, targetVelocity);
-      item.body.velocity.x *= 0.98;
+      item.body.velocity.z = lerpNumber(item.body.velocity.z, pusherVz, followZ);
+      item.body.velocity.y = lerpNumber(item.body.velocity.y, pusherVy, 0.62);
+      item.body.velocity.x *= 0.965;
     }
   }
 
