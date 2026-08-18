@@ -8,7 +8,7 @@
 - 无登录
 - 无持久化存储
 - 经济和掉落逻辑可调
-- 推盘、硬币、前方奖励槽具备基础物理和视觉反馈
+- 推盘、硬币、侧沿圆弧滑道、前方开口三槽具备基础物理和视觉反馈
 - 给开发者保留快速调试入口
 
 ![preview](artifacts/review-shot-fast-loop-tilt.png)
@@ -17,10 +17,10 @@
 
 已实现：
 
-- 双层推币机基础结构
-- 上层推盘前后往复
+- 单层平整台面，后墙开口推盘往复
 - 硬币、宝箱、稀有物掉落
-- 前方三槽奖励区
+- 前方三个开口坑洞（宝箱区 / Bonus / 高价值），中间隔板分流
+- 左右侧沿用与台面相切的 90° 圆弧滑出
 - 金币、钻石、碎片、任务、Bonus、Fever
 - 开发调试面板和快捷键
 - 本地截图自测流程
@@ -28,7 +28,7 @@
 当前仍然属于原型：
 
 - 物理效果以“可玩、可调、可观察”为优先，不是严格工业级仿真
-- 奖励槽的视觉表现已经建立，但结算演出还偏轻
+- 前方坑洞已改成开口下落，结算演出还偏轻
 - 没有账号、存档、后端服务、广告、支付、埋点
 
 ## 技术栈
@@ -37,6 +37,8 @@
 - `@dimforge/rapier3d-compat`：刚体、碰撞、重力、CCD、运动学推盘
 - `Vite`：本地开发和构建
 - `TypeScript`：原型逻辑组织
+
+可选实验：在地址后加 `?physics=taichi` 可启用 Taichi 辅助；默认仍是 Rapier。
 
 ## 启动方式
 
@@ -138,14 +140,19 @@ src/
   main.ts                     入口
   styles.css                  页面和面板样式
   prototype/
-    CoinPusherApp.ts          3D 场景、物理、玩法主循环
+    CoinPusherApp.ts          3D 场景、机台、玩法主循环
     config.ts                 基础数值、预设、初始状态
     types.ts                  类型定义
     ui.ts                     DOM UI 结构
+    physics/RapierWorld.ts    Rapier 物理适配
+    TaichiHybridPhysics.ts    可选 Taichi 辅助
 
 artifacts/
   review-shot-*.png           本地截图自测结果
 
+prototype-dev-notes.md
+planning-wiki.md
+rapier-migration-todo.md
 coin-pusher-prd-v0.1.md
 coin-pusher-tech-solution-v0.1.md
 coin-pusher-local-framework-doc.md
@@ -153,8 +160,9 @@ coin-pusher-local-framework-doc.md
 
 说明：
 
-- 当前实际运行入口在 `src/`
+- 当前实际运行入口在 `src/`，机台布局和玩法细节见 [prototype-dev-notes.md](prototype-dev-notes.md)
 - `assets/scripts/` 下还有一套框架化脚本草图，现阶段不是 Vite 原型的运行入口
+- `coin-pusher-prd-v0.1.md` 和 `coin-pusher-tech-solution-v0.1.md` 是更早的产品/技术方案，按 Cocos 方向写，不代表当前可运行原型
 
 ## 运行机制概览
 
@@ -186,7 +194,7 @@ coin-pusher-local-framework-doc.md
 
 - 视觉表现已经从“占位原型”推进到“可演示原型”，但仍未达到高保真商业美术水准
 - 物理参数做过多轮调校，当前默认后端是 Rapier，Taichi 仅作为可选辅助
-- 前方三槽已经是独立结构，但掉入后的演出还可以继续增强
+- 前方三槽是开口深坑，掉入后会继续下落，不会停在坑底
 - 当前没有音效系统
 - 当前没有移动端专项交互优化
 
@@ -209,8 +217,8 @@ coin-pusher-local-framework-doc.md
 
 如果继续迭代，建议按这个顺序推进：
 
-1. 增强前方奖励槽的掉入演出和停留反馈
-2. 拆分更真实的硬币投放机构和出币通道
-3. 补音效、粒子和结算动画
+1. 视觉与模式：见 [planning-wiki.md](planning-wiki.md)（金币样式、机台换皮、游戏模式）
+2. 增强前方开口槽的掉入演出、粒子和音效
+3. 拆分更真实的硬币投放机构和出币通道
 4. 抽离数值配置，支持更系统的策划调参
 5. 再考虑是否引入存档或后端能力

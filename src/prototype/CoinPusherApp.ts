@@ -71,7 +71,6 @@ export class CoinPusherApp {
   private state: RuntimeState = createInitialState();
   private debugOverrides: DebugOverrides = { ...DEFAULT_DEBUG_OVERRIDES };
   private readonly items: DropItem[] = [];
-  private readonly cleanupBodies: PhysicsBody[] = [];
   private readonly scheduledActions: ScheduledAction[] = [];
   private readonly playfieldWidth = TABLE.width - 0.9;
   /** Single flat playfield floor under the pusher. */
@@ -89,15 +88,11 @@ export class CoinPusherApp {
   private readonly sideRampEndZ = this.floorFrontZ + 0.02;
   private readonly sideExitLineZ = this.sideRampEndZ - this.sideRampOpeningWidth;
   private readonly sideWallFrontZ = this.sideExitLineZ;
-  /** Tiny tuck so the ramp top meets the floor without a visible gap. */
-  private readonly sideWingCut = 0.06;
-  private readonly sideRampOutward = 1.85;
-  private readonly sideRampAngle = 0.36;
+  private readonly sideRampRadius = 1.42;
+  private readonly sideRampArc = Math.PI / 2;
   private readonly sideWallThickness = 0.34;
-  private readonly payoutGapZ = 4.5;
   private readonly collectionCenterZ = 5.1;
   private readonly collectionDepth = 1.5;
-  private readonly collectionFloorY = -0.24;
   private readonly slotSplitX = 1.55;
   private readonly pusherApertureClearance = 0.02;
   private readonly pusherWidth = this.playfieldWidth - this.pusherApertureClearance * 2;
@@ -347,15 +342,19 @@ export class CoinPusherApp {
 
   private createTable(): void {
     // Keep the shell below the side-exit ramps so they don't pierce the cabinet.
+    // Stop before the front pits so dropped items can fall through open air.
+    const cabinetBackZ = this.floorBackZ - 2.24;
+    const cabinetFrontZ = this.floorFrontZ - 0.08;
+    const cabinetDepth = cabinetFrontZ - cabinetBackZ;
     const cabinet = new THREE.Mesh(
-      new THREE.BoxGeometry(TABLE.width + 0.9, 2.2, TABLE.depth + 1.1),
+      new THREE.BoxGeometry(TABLE.width + 0.9, 2.2, cabinetDepth),
       new THREE.MeshStandardMaterial({
         color: "#0b1826",
         metalness: 0.44,
         roughness: 0.62,
       }),
     );
-    cabinet.position.set(0, -1.72, 0.34);
+    cabinet.position.set(0, -1.72, (cabinetBackZ + cabinetFrontZ) / 2);
     cabinet.castShadow = true;
     cabinet.receiveShadow = true;
     this.scene.add(cabinet);
@@ -376,15 +375,15 @@ export class CoinPusherApp {
     rearTrim.receiveShadow = true;
     this.scene.add(rearTrim);
 
-    const frontTrimWidth = this.playfieldWidth - this.sideWingCut * 2 + 0.2;
-    const frontTrimDepth = this.floorFrontZ - this.sideExitLineZ + 0.45;
-    const frontTrimCenterZ = (this.sideExitLineZ + this.floorFrontZ) / 2 + 0.08;
+    const frontTrimWidth = this.playfieldWidth + 0.2;
+    const frontTrimDepth = this.floorFrontZ - this.sideExitLineZ + 0.08;
+    const frontTrimCenterZ = (this.sideExitLineZ + this.floorFrontZ) / 2;
     const frontTrim = new THREE.Mesh(
       new THREE.BoxGeometry(frontTrimWidth, 0.2, frontTrimDepth),
       new THREE.MeshStandardMaterial({
-        color: "#173349",
-        metalness: 0.82,
-        roughness: 0.2,
+        color: "#0f2233",
+        metalness: 0.28,
+        roughness: 0.72,
       }),
     );
     frontTrim.position.set(0, -0.04, frontTrimCenterZ);
@@ -401,7 +400,7 @@ export class CoinPusherApp {
     // Rear playfield stays full width up to the shared exit line.
     const rearFloorDepth = this.sideExitLineZ - this.floorBackZ;
     const rearFloorCenterZ = (this.floorBackZ + this.sideExitLineZ) / 2;
-    const frontFloorWidth = this.playfieldWidth - this.sideWingCut * 2;
+    const frontFloorWidth = this.playfieldWidth;
     const frontFloorDepth = this.floorFrontZ - this.sideExitLineZ;
     const frontFloorCenterZ = (this.sideExitLineZ + this.floorFrontZ) / 2;
 
@@ -430,6 +429,12 @@ export class CoinPusherApp {
       vec3(frontFloorWidth / 2, this.floorThickness / 2, frontFloorDepth / 2),
       vec3(0, this.floorY, frontFloorCenterZ),
     );
+    const floorFrontCap = new THREE.Mesh(
+      new THREE.PlaneGeometry(frontFloorWidth + 0.02, this.floorThickness + 0.02),
+      new THREE.MeshBasicMaterial({ color: "#143445" }),
+    );
+    floorFrontCap.position.set(0, this.floorY, this.floorFrontZ + 0.003);
+    this.scene.add(floorFrontCap);
 
     const railMaterial = new THREE.MeshPhysicalMaterial({
       color: "#2a4a61",
@@ -483,46 +488,7 @@ export class CoinPusherApp {
       this.scene.add(sideTrim);
     }
 
-    // Side ramps begin on the wall-end line; top edge tucked under the floor for a seamless join.
-    const rampDepth = this.sideRampEndZ - this.sideExitLineZ;
-    const rampCenterZ = (this.sideExitLineZ + this.sideRampEndZ) / 2;
-    const floorSurfaceY = this.getFloorSurfaceY();
-    const rampThickness = this.floorThickness;
-    const angle = this.sideRampAngle;
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-    const cabinetClearanceY = -0.52;
-    const maxDrop = Math.max(0.2, floorSurfaceY - cabinetClearanceY);
-    const safeOutward = Math.min(this.sideRampOutward, maxDrop / Math.max(0.2, sinA));
-    const rampOverlap = 0.16;
-    const rampHingeX = this.playfieldWidth / 2;
-    const rampMaterial = floorMaterial.clone();
-    rampMaterial.emissive = new THREE.Color("#123040");
-    for (const direction of [-1, 1] as const) {
-      const halfW = safeOutward / 2;
-      const halfT = rampThickness / 2;
-      // Tuck under the deck edge so the top surfaces meet without a gap.
-      const edgeX = direction * (rampHingeX - rampOverlap);
-      const centerX = edgeX + direction * (halfW * cosA - halfT * sinA);
-      const centerY = floorSurfaceY - halfW * sinA - halfT * cosA;
-
-      const ramp = new THREE.Mesh(
-        new THREE.BoxGeometry(safeOutward, rampThickness, rampDepth),
-        rampMaterial,
-      );
-      ramp.position.set(centerX, centerY, rampCenterZ);
-      ramp.rotation.z = -direction * angle;
-      ramp.castShadow = true;
-      ramp.receiveShadow = true;
-      this.scene.add(ramp);
-
-      this.addStaticBody(
-        vec3(halfW, halfT, rampDepth / 2),
-        vec3(centerX, centerY, rampCenterZ),
-        0,
-        -direction * angle,
-      );
-    }
+    this.createSideExitRamps(floorMaterial);
 
     const backWall = new THREE.Mesh(
       new THREE.BoxGeometry(this.playfieldWidth + 0.55, 3.8, 0.28),
@@ -543,114 +509,42 @@ export class CoinPusherApp {
     );
 
     const deckFrontY = this.getFloorSurfaceY();
-    const cliffEdge = new THREE.Mesh(
-      new THREE.BoxGeometry(frontFloorWidth - 0.08, 0.12, 0.18),
-      new THREE.MeshPhysicalMaterial({
-        color: "#c5d7e4",
-        emissive: "#2f4a5d",
-        metalness: 0.78,
-        roughness: 0.22,
-        clearcoat: 0.28,
-        clearcoatRoughness: 0.2,
-      }),
-    );
-    cliffEdge.position.set(0, deckFrontY - 0.02, this.floorFrontZ + 0.04);
-    cliffEdge.castShadow = true;
-    cliffEdge.receiveShadow = true;
-    this.scene.add(cliffEdge);
 
-    const cliffShadow = new THREE.Mesh(
-      new THREE.PlaneGeometry(frontFloorWidth - 0.12, 0.42),
-      new THREE.MeshBasicMaterial({
-        color: "#02060c",
-        transparent: true,
-        opacity: 0.72,
-      }),
-    );
-    cliffShadow.position.set(0, deckFrontY - 0.18, this.floorFrontZ + 0.28);
-    cliffShadow.rotation.x = -Math.PI / 2;
-    this.scene.add(cliffShadow);
-
-    const collectionWallMaterial = new THREE.MeshStandardMaterial({
-      color: "#6f93ab",
-      emissive: "#1d3648",
-      metalness: 0.72,
-      roughness: 0.28,
+    const dividerMaterial = new THREE.MeshStandardMaterial({
+      color: "#182838",
+      emissive: "#0b141c",
+      metalness: 0.18,
+      roughness: 0.82,
     });
-    const collectionPitCenterZ = this.getCollectionPitCenterZ();
-    const collectionPitDepth = this.getCollectionPitDepth();
-    const collectionPitFloorY = this.getCollectionPitFloorY();
-
-    const collectionFloor = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth - 0.18, 0.08, collectionPitDepth + 0.08),
-      new THREE.MeshStandardMaterial({
-        color: "#050b12",
-        emissive: "#020508",
-        metalness: 0.08,
-        roughness: 0.96,
-      }),
-    );
-    collectionFloor.position.set(0, collectionPitFloorY, collectionPitCenterZ + 0.04);
-    collectionFloor.rotation.x = 0.04;
-    collectionFloor.receiveShadow = true;
-    this.scene.add(collectionFloor);
-    this.addStaticBody(
-      vec3((this.playfieldWidth - 0.18) / 2, 0.04, (collectionPitDepth + 0.08) / 2),
-      vec3(0, collectionPitFloorY, collectionPitCenterZ + 0.04),
-      0.04,
-    );
-    const dividerDepth = collectionPitDepth + 0.08;
-    const collectionWalls = [
-      { size: [0.16, 0.98, dividerDepth], position: [-(this.playfieldWidth / 2) + 0.08, collectionPitFloorY + 0.43, collectionPitCenterZ + 0.02] },
-      { size: [0.16, 0.98, dividerDepth], position: [(this.playfieldWidth / 2) - 0.08, collectionPitFloorY + 0.43, collectionPitCenterZ + 0.02] },
-      { size: [0.14, 0.92, dividerDepth - 0.08], position: [-this.slotSplitX, collectionPitFloorY + 0.39, collectionPitCenterZ + 0.04] },
-      { size: [0.14, 0.92, dividerDepth - 0.08], position: [this.slotSplitX, collectionPitFloorY + 0.39, collectionPitCenterZ + 0.04] },
+    const collectionPitFrontZ = this.getCollectionPitCenterZ() + this.getCollectionPitDepth() / 2;
+    const dividerHeight = 2.55;
+    const dividerTopY = deckFrontY - 0.04;
+    const dividerCenterY = dividerTopY - dividerHeight / 2;
+    const dividerBackZ = this.floorFrontZ - 0.16;
+    const dividerFrontZ = collectionPitFrontZ + 0.08;
+    const dividerDepth = dividerFrontZ - dividerBackZ;
+    const dividerZ = (dividerBackZ + dividerFrontZ) / 2;
+    const collectionDividers = [
+      { width: 0.12, x: -(this.playfieldWidth / 2) + 0.06 },
+      { width: 0.14, x: -this.slotSplitX },
+      { width: 0.14, x: this.slotSplitX },
+      { width: 0.12, x: this.playfieldWidth / 2 - 0.06 },
     ] as const;
 
-    for (const wall of collectionWalls) {
-      const [sx, sy, sz] = wall.size;
-      const [px, py, pz] = wall.position;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), collectionWallMaterial);
-      mesh.position.set(px, py, pz);
+    for (const divider of collectionDividers) {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(divider.width, dividerHeight, dividerDepth),
+        dividerMaterial,
+      );
+      mesh.position.set(divider.x, dividerCenterY, dividerZ);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.scene.add(mesh);
       this.addStaticBody(
-        vec3(sx / 2, sy / 2, sz / 2),
-        vec3(px, py, pz),
+        vec3(divider.width / 2, dividerHeight / 2, dividerDepth / 2),
+        vec3(divider.x, dividerCenterY, dividerZ),
       );
     }
-
-    const collectionBackKick = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth - 0.16, 0.42, 0.14),
-      new THREE.MeshStandardMaterial({
-        color: "#152838",
-        emissive: "#0a1520",
-        metalness: 0.34,
-        roughness: 0.7,
-      }),
-    );
-    collectionBackKick.position.set(0, collectionPitFloorY + 0.2, collectionPitCenterZ - collectionPitDepth / 2 - 0.05);
-    collectionBackKick.castShadow = true;
-    collectionBackKick.receiveShadow = true;
-    this.scene.add(collectionBackKick);
-    this.addStaticBody(
-      vec3((this.playfieldWidth - 0.16) / 2, 0.21, 0.07),
-      vec3(0, collectionPitFloorY + 0.2, collectionPitCenterZ - collectionPitDepth / 2 - 0.05),
-    );
-
-    const collectionFrontLip = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth - 0.16, 0.36, 0.18),
-      collectionWallMaterial,
-    );
-    collectionFrontLip.position.set(0, collectionPitFloorY + 0.16, collectionPitCenterZ + collectionPitDepth / 2 + 0.1);
-    collectionFrontLip.castShadow = true;
-    collectionFrontLip.receiveShadow = true;
-    this.scene.add(collectionFrontLip);
-    this.addStaticBody(
-      vec3((this.playfieldWidth - 0.16) / 2, 0.18, 0.09),
-      vec3(0, collectionPitFloorY + 0.16, collectionPitCenterZ + collectionPitDepth / 2 + 0.1),
-    );
 
     this.createSlotFrame(-3.05, 2.82, "宝箱区", "#ffbe5a");
     this.createSlotFrame(0, 3.04, "Bonus", "#54f3ff");
@@ -916,10 +810,6 @@ export class CoinPusherApp {
       roughness: 0.06,
       metalness: 0,
     });
-    const frontGlass = new THREE.Mesh(new THREE.PlaneGeometry(this.playfieldWidth + 0.9, 2.85), glassMaterial);
-    frontGlass.position.set(0, 1.05, this.collectionCenterZ + 0.78);
-    this.scene.add(frontGlass);
-
     for (const direction of [-1, 1] as const) {
       const glassDepth = this.sideExitLineZ - this.floorBackZ + 0.4;
       const glassCenterZ = (this.floorBackZ + this.sideExitLineZ) / 2;
@@ -933,48 +823,77 @@ export class CoinPusherApp {
     }
   }
 
-  private createBillboard(text: string, color: string): THREE.Object3D {
+  private createSprayPaintDecal(text: string, color: string, width: number): THREE.Mesh {
     const canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 84;
+    canvas.width = 1024;
+    canvas.height = 256;
     const ctx = canvas.getContext("2d");
+    const height = width * (canvas.height / canvas.width);
     if (!ctx) {
-      return new THREE.Object3D();
+      return new THREE.Mesh(new THREE.PlaneGeometry(width, height));
     }
 
-    ctx.fillStyle = "rgba(5,18,28,0.84)";
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    const roundedContext = ctx as CanvasRenderingContext2D & {
-      roundRect?: (x: number, y: number, w: number, h: number, radii: number) => void;
-    };
-    if (typeof roundedContext.roundRect === "function") {
-      roundedContext.roundRect(6, 6, canvas.width - 12, canvas.height - 12, 18);
-    } else {
-      ctx.moveTo(24, 6);
-      ctx.lineTo(canvas.width - 24, 6);
-      ctx.quadraticCurveTo(canvas.width - 6, 6, canvas.width - 6, 24);
-      ctx.lineTo(canvas.width - 6, canvas.height - 24);
-      ctx.quadraticCurveTo(canvas.width - 6, canvas.height - 6, canvas.width - 24, canvas.height - 6);
-      ctx.lineTo(24, canvas.height - 6);
-      ctx.quadraticCurveTo(6, canvas.height - 6, 6, canvas.height - 24);
-      ctx.lineTo(6, 24);
-      ctx.quadraticCurveTo(6, 6, 24, 6);
-    }
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.font = "bold 28px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    ctx.font = '800 112px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Segoe UI", sans-serif';
+
+    ctx.save();
+    ctx.globalAlpha = 0.2;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 32;
+    ctx.fillText(text, centerX, centerY);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = 0.48;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.fillText(text, centerX, centerY);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = 0.86;
+    ctx.fillStyle = color;
+    ctx.fillText(text, centerX, centerY);
+    ctx.restore();
+
+    ctx.fillStyle = color;
+    for (let index = 0; index < 80; index += 1) {
+      ctx.globalAlpha = 0.06 + Math.random() * 0.16;
+      ctx.beginPath();
+      ctx.arc(
+        centerX + (Math.random() - 0.5) * 820,
+        centerY + (Math.random() - 0.5) * 150,
+        0.5 + Math.random() * 1.8,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+    }
 
     const texture = new THREE.CanvasTexture(canvas);
-    const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
-    const sprite = new THREE.Sprite(material);
-    sprite.scale.set(2.6, 0.85, 1);
-    return sprite;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
+
+    const paint = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height),
+      new THREE.MeshStandardMaterial({
+        map: texture,
+        transparent: true,
+        roughness: 0.96,
+        metalness: 0.02,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      }),
+    );
+    paint.renderOrder = 1;
+    return paint;
   }
 
   private createCoinMesh(): THREE.Group {
@@ -1108,10 +1027,6 @@ export class CoinPusherApp {
     return core;
   }
 
-  private getCollectionPitFloorY(): number {
-    return this.collectionFloorY - 0.32;
-  }
-
   private getCollectionPitCenterZ(): number {
     return this.collectionCenterZ + 0.02;
   }
@@ -1121,168 +1036,146 @@ export class CoinPusherApp {
   }
 
   private createSlotFrame(x: number, width: number, label: string, color: string): void {
-    const mouthDepth = this.getCollectionPitDepth() - 0.08;
     const mouthWidth = width - 0.18;
-    const pitDepth = mouthDepth - 0.1;
-    const pitFloorY = this.getCollectionPitFloorY();
     const mouthCenterZ = this.getCollectionPitCenterZ() + 0.02;
-    const mouthY = this.getFloorSurfaceY() - 0.08;
-    const cavityHeight = mouthY - pitFloorY;
+    const mouthY = this.getFloorSurfaceY() - 0.06;
+    const shaftHeight = 2.35;
+    const shaftBackZ = this.floorFrontZ - 0.08;
 
-    const rimMaterial = new THREE.MeshPhysicalMaterial({
-      color: "#d4e4ef",
-      emissive: "#355066",
-      metalness: 0.86,
-      roughness: 0.18,
-      clearcoat: 0.35,
-      clearcoatRoughness: 0.22,
-    });
-    const accentRimMaterial = new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 0.35,
-      metalness: 0.55,
-      roughness: 0.28,
-    });
     const pitWallMaterial = new THREE.MeshStandardMaterial({
       color: "#071018",
       emissive: "#03070c",
       metalness: 0.12,
       roughness: 0.92,
     });
-    const pitFloorMaterial = new THREE.MeshStandardMaterial({
-      color: "#02060b",
-      emissive: "#010305",
-      metalness: 0.05,
-      roughness: 0.98,
-    });
-
-    const rearRim = new THREE.Mesh(new THREE.BoxGeometry(mouthWidth + 0.08, 0.1, 0.14), rimMaterial);
-    rearRim.position.set(x, mouthY + 0.02, mouthCenterZ - mouthDepth / 2 + 0.02);
-    rearRim.castShadow = true;
-    rearRim.receiveShadow = true;
-    this.scene.add(rearRim);
-
-    for (const direction of [-1, 1] as const) {
-      const sideRim = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, mouthDepth + 0.04), rimMaterial);
-      sideRim.position.set(x + direction * (mouthWidth / 2), mouthY + 0.02, mouthCenterZ);
-      sideRim.castShadow = true;
-      sideRim.receiveShadow = true;
-      this.scene.add(sideRim);
-    }
-
-    const frontRim = new THREE.Mesh(new THREE.BoxGeometry(mouthWidth + 0.08, 0.12, 0.16), rimMaterial);
-    frontRim.position.set(x, mouthY + 0.01, mouthCenterZ + mouthDepth / 2 - 0.02);
-    frontRim.castShadow = true;
-    frontRim.receiveShadow = true;
-    this.scene.add(frontRim);
-
-    const accentStrip = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth - 0.2, 0.04, 0.05),
-      accentRimMaterial,
-    );
-    accentStrip.position.set(x, mouthY + 0.05, mouthCenterZ + mouthDepth / 2 + 0.02);
-    this.scene.add(accentStrip);
-
-    const openMouth = new THREE.Mesh(
-      new THREE.PlaneGeometry(mouthWidth - 0.28, mouthDepth - 0.28),
-      new THREE.MeshBasicMaterial({
-        color: "#000000",
-        transparent: true,
-        opacity: 0.94,
-      }),
-    );
-    openMouth.position.set(x, mouthY - 0.01, mouthCenterZ + 0.02);
-    openMouth.rotation.x = -Math.PI / 2;
-    this.scene.add(openMouth);
-
-    const pitFloor = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth - 0.3, 0.05, pitDepth - 0.18),
-      pitFloorMaterial,
-    );
-    pitFloor.position.set(x, pitFloorY + 0.03, mouthCenterZ + 0.05);
-    pitFloor.rotation.x = 0.05;
-    pitFloor.receiveShadow = true;
-    this.scene.add(pitFloor);
 
     const backWall = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth - 0.28, cavityHeight * 0.9, 0.08),
+      new THREE.BoxGeometry(mouthWidth - 0.28, shaftHeight, 0.08),
       pitWallMaterial,
     );
-    backWall.position.set(x, pitFloorY + cavityHeight * 0.45, mouthCenterZ - pitDepth / 2 + 0.1);
-    backWall.castShadow = true;
+    backWall.position.set(x, mouthY - shaftHeight * 0.5, shaftBackZ);
     backWall.receiveShadow = true;
     this.scene.add(backWall);
 
-    for (const direction of [-1, 1] as const) {
-      const sideWall = new THREE.Mesh(
-        new THREE.BoxGeometry(0.08, cavityHeight * 0.9, pitDepth - 0.16),
-        pitWallMaterial,
-      );
-      sideWall.position.set(
-        x + direction * ((mouthWidth - 0.34) / 2),
-        pitFloorY + cavityHeight * 0.45,
-        mouthCenterZ + 0.04,
-      );
-      sideWall.castShadow = true;
-      sideWall.receiveShadow = true;
-      this.scene.add(sideWall);
-    }
-
-    const frontInner = new THREE.Mesh(
-      new THREE.BoxGeometry(mouthWidth - 0.28, cavityHeight * 0.62, 0.08),
-      pitWallMaterial,
-    );
-    frontInner.position.set(x, pitFloorY + cavityHeight * 0.34, mouthCenterZ + pitDepth / 2 - 0.02);
-    frontInner.castShadow = true;
-    frontInner.receiveShadow = true;
-    this.scene.add(frontInner);
-
     const depthShade = new THREE.Mesh(
-      new THREE.PlaneGeometry(mouthWidth - 0.42, cavityHeight * 0.82),
+      new THREE.PlaneGeometry(mouthWidth - 0.42, shaftHeight * 0.62),
       new THREE.MeshBasicMaterial({
         color: "#000000",
         transparent: true,
-        opacity: 0.62,
+        opacity: 0.72,
       }),
     );
-    depthShade.position.set(x, pitFloorY + cavityHeight * 0.42, mouthCenterZ - pitDepth / 2 + 0.15);
+    depthShade.position.set(
+      x,
+      mouthY - shaftHeight * 0.62,
+      shaftBackZ + 0.05,
+    );
     this.scene.add(depthShade);
 
-    const bottomGlow = new THREE.Mesh(
-      new THREE.PlaneGeometry(mouthWidth - 0.5, pitDepth - 0.4),
-      new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.14,
-      }),
-    );
-    bottomGlow.position.set(x, pitFloorY + 0.06, mouthCenterZ + 0.08);
-    bottomGlow.rotation.x = -Math.PI / 2;
-    this.scene.add(bottomGlow);
-
-    const rimGlow = new THREE.Mesh(
-      new THREE.PlaneGeometry(mouthWidth - 0.34, 0.12),
-      new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.34,
-      }),
-    );
-    rimGlow.position.set(x, mouthY + 0.08, mouthCenterZ + mouthDepth / 2 + 0.05);
-    this.scene.add(rimGlow);
-
-    const pitLight = new THREE.PointLight(color, 7, 2.2, 2.4);
-    pitLight.position.set(x, pitFloorY + 0.18, mouthCenterZ + 0.12);
+    const pitLight = new THREE.PointLight(color, 4.2, 2.4, 2.4);
+    pitLight.position.set(x, mouthY - 0.55, mouthCenterZ + 0.08);
     this.scene.add(pitLight);
 
-    const mouthLight = new THREE.PointLight(color, 4.5, 1.8, 2);
-    mouthLight.position.set(x, mouthY + 0.12, mouthCenterZ + mouthDepth / 2 - 0.1);
-    this.scene.add(mouthLight);
+    const paintWidth = Math.min(mouthWidth - 0.42, 2.18);
+    const paint = this.createSprayPaintDecal(label, color, paintWidth);
+    paint.position.set(x, mouthY - 0.58, shaftBackZ + 0.055);
+    this.scene.add(paint);
+  }
 
-    const plaque = this.createBillboard(label, color);
-    plaque.position.set(x, this.collectionFloorY + 1.12, this.collectionCenterZ + 0.62);
-    this.scene.add(plaque);
+  private createSideExitRamps(floorMaterial: THREE.Material): void {
+    const floorSurfaceY = this.getFloorSurfaceY();
+    const thickness = this.floorThickness;
+    const radius = this.sideRampRadius;
+    const endAngle = this.sideRampArc;
+    const joinX = this.playfieldWidth / 2;
+    const rampDepth = this.sideRampEndZ - this.sideExitLineZ;
+    const zStart = this.sideExitLineZ;
+    const geometry = this.createCurvedRampGeometry(radius, thickness, endAngle, rampDepth);
+
+    for (const direction of [-1, 1] as const) {
+      const rampGeometry = direction === 1 ? geometry : geometry.clone();
+      if (direction === -1) {
+        this.mirrorGeometryX(rampGeometry);
+      }
+      const ramp = new THREE.Mesh(rampGeometry, floorMaterial);
+      ramp.position.set(direction * joinX, floorSurfaceY, zStart);
+      ramp.castShadow = true;
+      ramp.receiveShadow = true;
+      this.scene.add(ramp);
+      this.addCurvedRampPhysics(direction, joinX, floorSurfaceY, zStart, rampDepth, radius, thickness, endAngle);
+    }
+  }
+
+  private createCurvedRampGeometry(
+    radius: number,
+    thickness: number,
+    endAngle: number,
+    depth: number,
+  ): THREE.BufferGeometry {
+    const innerRadius = Math.max(0.08, radius - thickness);
+    const centerY = -radius;
+    const start = Math.PI / 2;
+    const far = start - endAngle;
+    const shape = new THREE.Shape();
+    shape.absarc(0, centerY, innerRadius, start, far, true);
+    shape.lineTo(Math.cos(far) * radius, centerY + Math.sin(far) * radius);
+    shape.absarc(0, centerY, radius, far, start, false);
+    shape.closePath();
+
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth,
+      bevelEnabled: false,
+      curveSegments: 48,
+      steps: 1,
+    });
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  private addCurvedRampPhysics(
+    direction: -1 | 1,
+    joinX: number,
+    floorSurfaceY: number,
+    zStart: number,
+    rampDepth: number,
+    radius: number,
+    thickness: number,
+    endAngle: number,
+  ): void {
+    const zCenter = zStart + rampDepth / 2;
+    const halfDepth = rampDepth / 2;
+    const halfThickness = thickness / 2;
+    const arcSegments = 16;
+    const physicsRadius = radius - 0.012;
+    for (let index = 0; index < arcSegments; index += 1) {
+      const theta = (endAngle * (index + 0.5)) / arcSegments;
+      const span = (physicsRadius * endAngle) / arcSegments;
+      const centerX = direction * (joinX + (physicsRadius - halfThickness) * Math.sin(theta));
+      const centerY = floorSurfaceY - physicsRadius + (physicsRadius - halfThickness) * Math.cos(theta);
+      this.addStaticBody(
+        vec3(span / 2 + 0.01, halfThickness, halfDepth),
+        vec3(centerX, centerY, zCenter),
+        0,
+        -direction * theta,
+      );
+    }
+  }
+
+  private mirrorGeometryX(geometry: THREE.BufferGeometry): void {
+    geometry.scale(-1, 1, 1);
+    const index = geometry.getIndex();
+    if (!index) {
+      geometry.computeVertexNormals();
+      return;
+    }
+    const values = index.array;
+    for (let offset = 0; offset < values.length; offset += 3) {
+      const swap = values[offset];
+      values[offset] = values[offset + 1];
+      values[offset + 1] = swap;
+    }
+    index.needsUpdate = true;
+    geometry.computeVertexNormals();
   }
 
   private addStaticBody(halfExtents: Vec3, position: Vec3, rotationX = 0, rotationZ = 0): void {
@@ -2122,7 +2015,7 @@ export class CoinPusherApp {
         continue;
       }
 
-      if (item.body.position.z < this.payoutGapZ + 0.04 || item.body.position.y > this.collectionFloorY - 0.1) {
+      if (item.body.position.z < this.floorFrontZ + 0.04 || item.body.position.y > this.getFloorSurfaceY() - 0.12) {
         continue;
       }
 
@@ -2130,29 +2023,28 @@ export class CoinPusherApp {
       this.collectItem(item, slot);
     }
 
-    for (const item of this.items) {
-      if (
-        item.collected ||
-        item.body.position.y < -8 ||
-        item.body.position.z > this.collectionCenterZ + this.collectionDepth + 1.2 ||
-        Math.abs(item.body.position.x) > TABLE.width
-      ) {
-        this.cleanupBodies.push(item.body);
-        this.scene.remove(item.mesh);
-      }
-    }
-
-    for (const body of this.cleanupBodies) {
-      this.physics.removeBody(body);
-    }
-    this.cleanupBodies.length = 0;
-
     for (let index = this.items.length - 1; index >= 0; index -= 1) {
       const item = this.items[index];
-      if (item.collected || item.body.position.y < -8) {
-        this.items.splice(index, 1);
+      if (!this.shouldDespawnItem(item)) {
+        continue;
       }
+      this.physics.removeBody(item.body);
+      this.scene.remove(item.mesh);
+      this.items.splice(index, 1);
     }
+  }
+
+  private shouldDespawnItem(item: DropItem): boolean {
+    if (item.body.position.y < -8) {
+      return true;
+    }
+    if (item.body.position.z > this.collectionCenterZ + this.collectionDepth + 1.2) {
+      return true;
+    }
+    if (Math.abs(item.body.position.x) > TABLE.width) {
+      return true;
+    }
+    return item.collected && item.body.position.z < this.floorFrontZ;
   }
 
   private getSlotType(x: number): SlotType {

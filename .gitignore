@@ -3,6 +3,10 @@ dist/
 
 preview.log
 preview.err
+dev.log
+dev.err
+
+artifacts/edge-profile/
 
 .DS_Store
 Thumbs.db

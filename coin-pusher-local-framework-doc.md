@@ -2,7 +2,9 @@
 
 ## 1. 文档目的
 
-这份文档说明当前项目在本地预留的游戏代码框架，重点回答下面几个问题：
+这份文档说明当前项目在 `assets/scripts/` 里预留的游戏代码框架。它不是 `pnpm dev` 正在运行的那套 Vite 原型；可玩版本见 [README.md](README.md) 和 [prototype-dev-notes.md](prototype-dev-notes.md)。
+
+重点回答下面几个问题：
 
 - 框架分了哪些层
 - 每一层负责什么

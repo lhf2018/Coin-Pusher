@@ -2,6 +2,8 @@
 
 This folder contains the local gameplay framework skeleton for the coin pusher project.
 
+It is not the running Vite prototype. The playable app lives in `src/` — see the repo `README.md` and `prototype-dev-notes.md`.
+
 ## Entry Flow
 
 - `core/AppLauncher.ts`

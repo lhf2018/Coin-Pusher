@@ -1,6 +1,14 @@
 # Rapier Migration TODO
 
-Branch: `codex/taichi-physics-spike`
+当前状态：Rapier 已经是 Vite 原型的默认物理后端。这份清单保留为迁移记录，不再按「还没迁」来读。
+
+可运行入口：`http://127.0.0.1:4173/`。可选实验：`?physics=taichi`。
+
+机台现状（单层，不是上下双层）：
+
+- 一块平整台面 + 后墙推盘孔径
+- 左右 90° 圆弧侧沿
+- 前方三个开口坑洞，掉入后继续下落
 
 ## Goal
 
@@ -22,7 +30,7 @@ Decision for now:
 
 - Replace `cannon-es` runtime physics in the prototype with `Rapier`.
 - Keep `Three.js` rendering, UI, economy, tasks, and debug controls as-is in the first migration phase.
-- Rebuild the pusher, upper deck, lower deck, side walls, payout slots, and item bodies on top of `Rapier`.
+- Rebuild the pusher, single playfield, side-exit ramps, payout openings, and item bodies on top of `Rapier`.
 - Re-tune contact and motion parameters for a more believable coin pusher feel.
 
 ## Out of Scope
@@ -44,7 +52,7 @@ Decision for now:
 - [x] Recreate damping, gravity, sleep, and wake-up behavior with `Rapier` equivalents.
 - [x] Enable CCD for fast drops or edge cases where items can tunnel through thin geometry.
 - [x] Tune friction, restitution, mass, and damping for coins, chests, pusher, and deck surfaces.
-- [ ] Verify that coins do not fall behind the pusher or pass through side walls and payout structures.
+- [x] Verify that coins do not fall behind the pusher or pass through side walls and payout structures.
 - [x] Add a visible runtime status label so the page clearly shows which physics backend is active.
 - [x] Make Rapier the default runtime. Keep Taichi assist behind `?physics=taichi`. Cannon is no longer used at runtime.
 
@@ -80,13 +88,13 @@ Decision for now:
 ## Acceptance Criteria
 
 - The prototype still runs locally at `http://127.0.0.1:4173/`.
-- Coins, chests, and rare items collide correctly with decks, walls, and the pusher.
+- Coins, chests, and rare items collide correctly with the playfield, walls, ramps, and the pusher.
 - The pusher moves items forward without obvious tunneling or items appearing behind it.
-- The lower deck and front payout area behave more believably than the current `cannon-es` version.
-- The runtime status label clearly shows whether the app is using Cannon, Taichi hybrid, or Rapier.
+- Front payout openings let items fall through; side exits use the curved ramps.
+- The runtime status label clearly shows whether the app is using Rapier or the Taichi assist path.
 - The migration does not break debug controls, reward flow, or task progression.
 
 ## Notes
 
 - The current Taichi branch work remains useful as an experiment and reference for GPU-assisted behavior.
-- For the production direction of this prototype, `Rapier` is the preferred next step.
+- For this prototype, `Rapier` is the default runtime. Taichi remains an optional assist path.
