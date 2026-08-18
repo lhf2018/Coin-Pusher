@@ -159,9 +159,17 @@ export function createUI(root: HTMLElement): UIRefs {
   `;
 
   const debugPanel = document.createElement("div");
-  debugPanel.className = "debug-panel";
+  debugPanel.className = "debug-panel hidden";
+
+  const debugDock = document.createElement("div");
+  debugDock.className = "debug-dock";
+  debugDock.append(debugToggleButton, physicsStatus, debugPresetBar, debugPanel);
 
   topBar.append(resources, statsStrip, bonusCard);
+
+  const leftRail = document.createElement("div");
+  leftRail.className = "left-rail";
+  leftRail.append(topBar, feverPill, debugDock);
 
   const mainButtons = sidebar.querySelector<HTMLDivElement>(".button-stack-main");
   const upgradeButtons = sidebar.querySelector<HTMLDivElement>(".button-stack-upgrades");
@@ -182,8 +190,9 @@ export function createUI(root: HTMLElement): UIRefs {
   mainButtons.append(dropButton, autoDropButton);
   upgradeButtons.append(coinUpgradeButton, speedUpgradeButton, autoUpgradeButton);
 
-  overlay.append(topBar, feverPill, debugPresetBar, physicsStatus, debugToggleButton);
-  shell.append(viewport, overlay, sidebar, debugPanel);
+  overlay.append(leftRail);
+  viewport.append(overlay);
+  shell.append(viewport, sidebar);
   root.append(shell);
 
   return {
