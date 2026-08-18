@@ -92,8 +92,8 @@ export class CoinPusherApp {
   private readonly pusherBodyHalfHeight = 0.28;
   private readonly pusherHoverGap = 0.01;
   private readonly pusherFaceThickness = 0.28;
-  private readonly pusherRemainInside = 0.55;
-  private readonly pusherTravel = 0.78;
+  private readonly pusherRemainInside = 0.4;
+  private readonly pusherTravel = 1.15;
   private readonly pusherApertureZ = this.floorBackZ + 0.42;
   private readonly pusherEndZ =
     this.pusherApertureZ -
@@ -127,6 +127,8 @@ export class CoinPusherApp {
   private taichiPendingResult: TaichiAssistResult | null = null;
   private lastViewportWidth = 0;
   private lastViewportHeight = 0;
+  private lastFrameAtMs = 0;
+  private frameInProgress = false;
 
   public constructor(root: HTMLDivElement) {
     this.ui = createUI(root);
@@ -184,7 +186,10 @@ export class CoinPusherApp {
       return;
     }
 
-    void this.initializeExperimentalPhysics();
+    // Only probe Taichi when explicitly requested — WebGPU init can hitch/freeze the tab.
+    if (this.getRequestedPhysicsMode() === "taichi") {
+      void this.initializeExperimentalPhysics();
+    }
     this.scheduleAction(300, () => {
       this.pushMessage("机台准备完成。按 Space 或点击投币开始。");
     });
@@ -1608,13 +1613,10 @@ export class CoinPusherApp {
 
   private seedBoard(): void {
     const seedRows = [
-      { zone: "pusher", z: -2.9, xs: [-2.85, -1.4, 0.05, 1.45, 2.8] },
-      { zone: "pusher", z: -2.05, xs: [-3.05, -1.7, -0.2, 1.2, 2.55] },
-      { zone: "pusher", z: -1.2, xs: [-2.7, -1.2, 0.35, 1.85] },
-      { zone: "pusher", z: -0.4, xs: [-3.05, -1.7, -0.3, 1.05, 2.4] },
-      { zone: "lower", z: 1.35, xs: [-2.7, -1.35, 0.15, 1.55, 2.95] },
-      { zone: "lower", z: 2.45, xs: [-2.35, -0.95, 0.55, 1.95, 3.15] },
-      { zone: "lower", z: 3.32, xs: [-1.95, -0.65, 0.95, 2.3] },
+      { zone: "pusher", z: -2.2, xs: [-2.4, -0.8, 0.8, 2.4] },
+      { zone: "pusher", z: -1.2, xs: [-1.8, 0, 1.8] },
+      { zone: "lower", z: 1.6, xs: [-2.2, -0.6, 0.8, 2.2] },
+      { zone: "lower", z: 2.8, xs: [-1.5, 0.2, 1.7] },
     ];
 
     for (const row of seedRows) {
@@ -1626,32 +1628,25 @@ export class CoinPusherApp {
         this.spawnItem("coin", x, row.z, {
           spawnY: surfaceY + this.getItemRestOffset("coin"),
           rotationX: 0,
-          velocityX: THREE.MathUtils.randFloat(-0.03, 0.03),
-          velocityZ: THREE.MathUtils.randFloat(-0.01, 0.03),
+          velocityX: 0,
+          velocityZ: 0,
           randomSpin: false,
         });
       }
     }
 
-    this.spawnItem("chest", -3.02, 1.7, {
-      spawnY: this.getFloorSurfaceY(1.7) + this.getItemRestOffset("chest"),
+    this.spawnItem("chest", -2.4, 2.1, {
+      spawnY: this.getFloorSurfaceY() + this.getItemRestOffset("chest"),
       rotationX: 0,
       velocityX: 0,
-      velocityZ: 0.02,
+      velocityZ: 0,
       randomSpin: false,
     });
-    this.spawnItem("chest", 2.65, 2.55, {
-      spawnY: this.getFloorSurfaceY(2.55) + this.getItemRestOffset("chest"),
+    this.spawnItem("rare", 1.8, 2.6, {
+      spawnY: this.getFloorSurfaceY() + this.getItemRestOffset("rare"),
       rotationX: 0,
       velocityX: 0,
-      velocityZ: 0.02,
-      randomSpin: false,
-    });
-    this.spawnItem("rare", 0.15, 3.15, {
-      spawnY: this.getFloorSurfaceY(3.15) + this.getItemRestOffset("rare"),
-      rotationX: 0,
-      velocityX: 0,
-      velocityZ: 0.01,
+      velocityZ: 0,
       randomSpin: false,
     });
   }
@@ -1679,43 +1674,49 @@ export class CoinPusherApp {
 
   private loop = (): void => {
     requestAnimationFrame(this.loop);
-    this.handleResize();
+    this.tickFrame();
+  };
 
-    const rawDelta = this.clock.getDelta();
-    const delta = rawDelta * this.debugOverrides.timeScale;
-    const now = performance.now();
-    this.frameCount += 1;
+  private tickFrame(): void {
+    if (this.frameInProgress) {
+      return;
+    }
+    this.frameInProgress = true;
+    this.lastFrameAtMs = performance.now();
+    try {
+      this.handleResize();
 
-    this.updateAutoDrop(delta);
-    if (!this.physicsReady) {
+      const rawDelta = this.clock.getDelta();
+      const delta = Math.min(Math.max(rawDelta, 0) * this.debugOverrides.timeScale, 0.05);
+      const now = performance.now();
+      this.frameCount += 1;
+
+      this.updateAutoDrop(delta);
+      if (!this.physicsReady) {
+        this.processScheduledActions(now);
+        this.updateTimers(delta);
+        this.sampleFps(now);
+        this.renderState();
+        this.renderer.render(this.scene, this.camera);
+        return;
+      }
+
+      this.updatePusher(delta);
+      this.applyPusherAssist();
+      this.stepPhysics(delta);
+      this.syncMeshes();
+      this.resolveCollections();
       this.processScheduledActions(now);
       this.updateTimers(delta);
       this.sampleFps(now);
       this.renderState();
+
       this.renderer.render(this.scene, this.camera);
-      return;
+    } catch (error) {
+      console.error("CoinPusherApp frame failed.", error);
+    } finally {
+      this.frameInProgress = false;
     }
-
-    this.updatePusher(delta);
-    if (this.usingTaichiHybrid()) {
-      this.applyPendingTaichiAssist();
-    } else {
-      this.applyPusherAssist();
-    }
-    this.stepPhysics(delta);
-    if (this.usingTaichiHybrid()) {
-      this.queueTaichiAssistStep(delta);
-    } else {
-      this.applyLowerDeckAssist();
-    }
-    this.syncMeshes();
-    this.resolveCollections();
-    this.processScheduledActions(now);
-    this.updateTimers(delta);
-    this.sampleFps(now);
-    this.renderState();
-
-    this.renderer.render(this.scene, this.camera);
   };
 
   private updateAutoDrop(deltaSeconds: number): void {
@@ -1729,27 +1730,35 @@ export class CoinPusherApp {
       (BASE_CONFIG.autoDropIntervalMs / this.debugOverrides.dropRateScale) / upgradeFactor;
     this.autoDropElapsedMs += deltaSeconds * 1000;
 
-    while (this.autoDropElapsedMs >= interval) {
+    let drops = 0;
+    while (this.autoDropElapsedMs >= interval && interval > 1 && drops < 3) {
       this.autoDropElapsedMs -= interval;
+      drops += 1;
       if (!this.requestDrop()) {
         this.state.autoDropEnabled = false;
         break;
       }
     }
+    if (this.autoDropElapsedMs > interval * 3) {
+      this.autoDropElapsedMs = interval;
+    }
   }
 
   private updatePusher(deltaSeconds: number): void {
     const speedBoost = 1 + this.state.upgrades.pusherSpeed * 0.08;
-    const cycleSpeed = BASE_CONFIG.basePusherSpeed * this.debugOverrides.pusherSpeedScale * speedBoost * 0.34;
+    const cycleSpeed = BASE_CONFIG.basePusherSpeed * this.debugOverrides.pusherSpeedScale * speedBoost * 0.42;
     this.pusherTime = (this.pusherTime + deltaSeconds * cycleSpeed) % 1;
 
+    // Keep motion readable near turnarounds (pure ease-in-out crawls and looks stuck).
     let z = this.pusherStartZ;
     if (this.pusherTime < 0.5) {
-      const t = easeInOutCubic(this.pusherTime / 0.5);
-      z = THREE.MathUtils.lerp(this.pusherStartZ, this.pusherEndZ, t);
+      const t = this.pusherTime / 0.5;
+      const eased = t * 0.35 + easeInOutCubic(t) * 0.65;
+      z = THREE.MathUtils.lerp(this.pusherStartZ, this.pusherEndZ, eased);
     } else {
-      const t = easeInOutCubic((this.pusherTime - 0.5) / 0.5);
-      z = THREE.MathUtils.lerp(this.pusherEndZ, this.pusherStartZ, t);
+      const t = (this.pusherTime - 0.5) / 0.5;
+      const eased = t * 0.35 + easeInOutCubic(t) * 0.65;
+      z = THREE.MathUtils.lerp(this.pusherEndZ, this.pusherStartZ, eased);
     }
 
     const y = this.getPusherBaseY() + this.pusherBodyHalfHeight;
@@ -1881,12 +1890,16 @@ export class CoinPusherApp {
       } else if (
         z > pusherFrontZ &&
         Math.abs(x) <= this.playfieldWidth / 2 - 0.16 &&
-        Math.hypot(item.body.velocity.x, item.body.velocity.z) < 0.04
+        Math.hypot(item.body.velocity.x, item.body.velocity.z) < 0.04 &&
+        Math.hypot(item.body.velocity.x, item.body.velocity.z) > 0.002
       ) {
-        // Only nudge clearly stuck coins; avoid constant floor vibration.
         const targetVelocity = item.type === "chest" ? 0.03 : item.type === "rare" ? 0.035 : 0.04;
         desiredForward = targetVelocity;
         forwardBias = targetVelocity * 0.8;
+      }
+
+      if (desiredForward === 0 && forwardBias === 0) {
+        continue;
       }
 
       snapshot.push({
@@ -1930,7 +1943,7 @@ export class CoinPusherApp {
   }
 
   private stepPhysics(deltaSeconds: number): void {
-    this.physics.step(1 / 90, deltaSeconds, 6);
+    this.physics.step(1 / 60, deltaSeconds, 3);
   }
 
   private applyPusherAssist(): void {
@@ -1944,7 +1957,7 @@ export class CoinPusherApp {
     const pusherFrontZ = this.pusherBody.position.z + this.pusherDepth / 2 - 0.05;
 
     for (const item of this.items) {
-      if (item.collected) {
+      if (item.collected || item.body.isSleeping()) {
         continue;
       }
       if (Math.abs(item.body.position.x) > this.pusherWidth / 2 + 0.03) {
@@ -1963,22 +1976,19 @@ export class CoinPusherApp {
         continue;
       }
 
-      // Coins resting on the pusher should ride with it.
       const followZ = item.type === "chest" ? 0.84 : item.type === "rare" ? 0.9 : 0.94;
-      item.body.wakeUp();
       item.body.velocity.z = lerpNumber(item.body.velocity.z, pusherVz, followZ);
       item.body.velocity.y = lerpNumber(item.body.velocity.y, pusherVy, 0.62);
       item.body.velocity.x *= 0.965;
     }
   }
 
-  private applyLowerDeckAssist(): void {
+  private applyFloorAssist(): void {
     const floorSurfaceY = this.getFloorSurfaceY();
-    const pusherBackZ = this.pusherBody.position.z - this.pusherDepth / 2 + 0.05;
     const pusherFrontZ = this.pusherBody.position.z + this.pusherDepth / 2 - 0.05;
 
     for (const item of this.items) {
-      if (item.collected) {
+      if (item.collected || item.body.isSleeping()) {
         continue;
       }
 
@@ -1986,63 +1996,15 @@ export class CoinPusherApp {
       if (Math.abs(x) > this.playfieldWidth / 2 - 0.12) {
         continue;
       }
-      if (z < this.floorBackZ - 0.1 || z >= this.floorFrontZ - 0.08) {
+      if (z <= pusherFrontZ || z >= this.floorFrontZ - 0.08) {
         continue;
       }
-
-      const restY = floorSurfaceY + this.getItemRestOffset(item.type);
-      const nearFloor = y <= restY + 0.14;
-      if (!nearFloor) {
+      if (y > floorSurfaceY + this.getItemRestOffset(item.type) + 0.14) {
         continue;
-      }
-
-      // Kill contact chatter so resting coins can settle/sleep.
-      if (Math.abs(item.body.velocity.y) < 0.45) {
-        item.body.velocity.y *= 0.35;
-      }
-      if (Math.abs(item.body.velocity.y) < 0.04) {
-        item.body.velocity.y = 0;
       }
 
       const horizontalSpeed = Math.hypot(item.body.velocity.x, item.body.velocity.z);
-      const angularSpeed = Math.hypot(
-        item.body.angularVelocity.x,
-        item.body.angularVelocity.y,
-        item.body.angularVelocity.z,
-      );
-
-      if (horizontalSpeed < 0.035 && Math.abs(item.body.velocity.y) < 0.03) {
-        item.body.velocity.x *= 0.7;
-        item.body.velocity.z *= 0.7;
-        if (angularSpeed < 1.2) {
-          item.body.angularVelocity.x *= 0.55;
-          item.body.angularVelocity.y *= 0.55;
-          item.body.angularVelocity.z *= 0.55;
-        }
-        if (horizontalSpeed < 0.012 && angularSpeed < 0.35 && Math.abs(item.body.velocity.y) < 0.02) {
-          item.body.velocity.x = 0;
-          item.body.velocity.z = 0;
-          item.body.velocity.y = 0;
-          item.body.angularVelocity.x = 0;
-          item.body.angularVelocity.y = 0;
-          item.body.angularVelocity.z = 0;
-          item.body.sleep();
-          continue;
-        }
-      }
-
-      // Coins currently on the pusher footprint are handled by pusher assist.
-      const onPusherFootprint =
-        Math.abs(x) <= this.pusherWidth / 2 + 0.03 && z >= pusherBackZ && z <= pusherFrontZ;
-      if (onPusherFootprint) {
-        continue;
-      }
-
-      // Flat floor: only gently unstick coins that are nearly stopped ahead of the pusher.
-      if (z <= pusherFrontZ) {
-        continue;
-      }
-      if (horizontalSpeed > 0.08) {
+      if (horizontalSpeed > 0.08 || horizontalSpeed < 0.002) {
         continue;
       }
 
@@ -2051,9 +2013,8 @@ export class CoinPusherApp {
         continue;
       }
 
-      item.body.wakeUp();
-      item.body.velocity.z = lerpNumber(item.body.velocity.z, targetVelocity, 0.06);
-      item.body.velocity.x *= 0.98;
+      item.body.velocity.z = lerpNumber(item.body.velocity.z, targetVelocity, 0.05);
+      item.body.velocity.x *= 0.985;
     }
   }
 

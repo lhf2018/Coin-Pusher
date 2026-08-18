@@ -208,6 +208,25 @@ export class PhysicsBody {
     }
     this.raw.sleep();
   }
+
+  public isSleeping(): boolean {
+    return this.raw.isSleeping();
+  }
+
+  public setVelocitySilent(x: number, y: number, z: number): void {
+    if (this.kinematic) {
+      this.scriptedVelocity = { x, y, z };
+      return;
+    }
+    this.raw.setLinvel({ x, y, z }, false);
+  }
+
+  public setAngularVelocitySilent(x: number, y: number, z: number): void {
+    if (this.kinematic) {
+      return;
+    }
+    this.raw.setAngvel({ x, y, z }, false);
+  }
 }
 
 export class RapierPhysicsWorld {
@@ -289,10 +308,9 @@ export class RapierPhysicsWorld {
       .setAngvel(spec.angularVelocity)
       .setLinearDamping(spec.linearDamping)
       .setAngularDamping(spec.angularDamping)
-      .setCcdEnabled(true)
-      .setSoftCcdPrediction(0.55)
+      .setCcdEnabled(false)
       .setCanSleep(true)
-      .setAdditionalSolverIterations(4);
+      .setAdditionalSolverIterations(1);
 
     const body = world.createRigidBody(desc);
     world.createCollider(this.createItemCollider(spec.kind), body);
