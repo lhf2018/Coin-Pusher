@@ -21,6 +21,7 @@ export interface UIRefs {
   overlay: HTMLDivElement;
   economyHint: HTMLDivElement;
   dropButton: HTMLButtonElement;
+  coinTowerButton: HTMLButtonElement;
   autoDropButton: HTMLButtonElement;
   coinUpgradeButton: HTMLButtonElement;
   speedUpgradeButton: HTMLButtonElement;
@@ -182,12 +183,13 @@ export function createUI(root: HTMLElement): UIRefs {
   }
 
   const dropButton = createPanelButton("投币", "action-button action-button-primary");
+  const coinTowerButton = createPanelButton("升起金币塔", "action-button action-button-accent");
   const autoDropButton = createPanelButton("自动投币：关", "action-button");
   const coinUpgradeButton = createPanelButton("升级金币收益", "action-button");
   const speedUpgradeButton = createPanelButton("升级推盘速度", "action-button");
   const autoUpgradeButton = createPanelButton("升级自动投币", "action-button");
 
-  mainButtons.append(dropButton, autoDropButton);
+  mainButtons.append(dropButton, coinTowerButton, autoDropButton);
   upgradeButtons.append(coinUpgradeButton, speedUpgradeButton, autoUpgradeButton);
 
   overlay.append(leftRail);
@@ -218,6 +220,7 @@ export function createUI(root: HTMLElement): UIRefs {
     overlay,
     economyHint,
     dropButton,
+    coinTowerButton,
     autoDropButton,
     coinUpgradeButton,
     speedUpgradeButton,

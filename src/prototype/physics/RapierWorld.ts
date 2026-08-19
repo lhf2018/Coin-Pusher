@@ -12,6 +12,7 @@ export interface StaticBoxSpec {
   halfExtents: Vec3;
   position: Vec3;
   rotationX?: number;
+  rotationY?: number;
   rotationZ?: number;
   friction?: number;
   restitution?: number;
@@ -57,22 +58,26 @@ function quatFromEulerX(rotationX: number): { x: number; y: number; z: number; w
   };
 }
 
-function quatFromEulerXZ(
+function quatFromEulerXYZ(
   rotationX: number,
+  rotationY: number,
   rotationZ: number,
 ): { x: number; y: number; z: number; w: number } {
   const hx = rotationX * 0.5;
+  const hy = rotationY * 0.5;
   const hz = rotationZ * 0.5;
   const sx = Math.sin(hx);
   const cx = Math.cos(hx);
+  const sy = Math.sin(hy);
+  const cy = Math.cos(hy);
   const sz = Math.sin(hz);
   const cz = Math.cos(hz);
-  // Z then X (matches Three.js default order for these two axes when Y is 0).
+  // Intrinsic XYZ (matches Three.js default Euler order).
   return {
-    x: sx * cz,
-    y: -sx * sz,
-    z: cx * sz,
-    w: cx * cz,
+    x: sx * cy * cz + cx * sy * sz,
+    y: cx * sy * cz - sx * cy * sz,
+    z: cx * cy * sz + sx * sy * cz,
+    w: cx * cy * cz - sx * sy * sz,
   };
 }
 
@@ -277,9 +282,12 @@ export class RapierPhysicsWorld {
   public createStaticBox(spec: StaticBoxSpec): void {
     const world = this.requireWorld();
     const rotationX = spec.rotationX ?? 0;
+    const rotationY = spec.rotationY ?? 0;
     const rotationZ = spec.rotationZ ?? 0;
     const rotation =
-      rotationZ === 0 ? quatFromEulerX(rotationX) : quatFromEulerXZ(rotationX, rotationZ);
+      rotationY === 0 && rotationZ === 0
+        ? quatFromEulerX(rotationX)
+        : quatFromEulerXYZ(rotationX, rotationY, rotationZ);
     const body = world.createRigidBody(
       RAPIER.RigidBodyDesc.fixed()
         .setTranslation(spec.position.x, spec.position.y, spec.position.z)

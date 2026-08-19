@@ -161,6 +161,36 @@ export class CoinPusherApp {
   private lastViewportHeight = 0;
   private lastFrameAtMs = 0;
   private frameInProgress = false;
+  /** Center playfield lift hatch — coins rise through this circular opening. */
+  private readonly floorHoleCenterX = 0;
+  private readonly floorHoleCenterZ = 0.55;
+  private readonly floorHoleRadius = 1.05;
+  private readonly floorHoleShaftDepth = 1.55;
+  /** Visual coin radius is 0.35; pack slightly under that for a tight ring. */
+  private readonly coinTowerCoinRadius = 0.34;
+  private readonly coinTowerRingCount = 6;
+  private readonly coinTowerLayers = 8;
+  /** Vertical step ≈ coin collider height so layers rest without bounce. */
+  private readonly coinTowerLayerStep = 0.11;
+  private floorHoleOpen = 0;
+  private floorHoleTarget = 0;
+  private floorHoleCovers: Array<{
+    mesh: THREE.Mesh;
+    body: PhysicsBody;
+    closedX: number;
+    closedY: number;
+    closedZ: number;
+    bodyOffsetX: number;
+    bodyOffsetY: number;
+    slideX: number;
+    dropY: number;
+  }> = [];
+  private coinTowerPhase: "idle" | "opening" | "rising" | "closing" | "stabilizing" = "idle";
+  private coinTowerRise = 0;
+  private coinTowerStabilizeLeft = 0;
+  private coinTowerItemIds = new Set<string>();
+  private coinTowerAnchoredIds = new Set<string>();
+  private readonly coinTowerRestPoses = new Map<string, { x: number; y: number; z: number }>();
 
   public constructor(root: HTMLDivElement) {
     this.ui = createUI(root);
@@ -443,24 +473,11 @@ export class CoinPusherApp {
     });
 
     // Rear playfield stays full width up to the shared exit line.
-    const rearFloorDepth = this.sideExitLineZ - this.floorBackZ;
-    const rearFloorCenterZ = (this.floorBackZ + this.sideExitLineZ) / 2;
     const frontFloorWidth = this.playfieldWidth;
     const frontFloorDepth = this.floorFrontZ - this.sideExitLineZ;
     const frontFloorCenterZ = (this.sideExitLineZ + this.floorFrontZ) / 2;
 
-    const rearFloor = new THREE.Mesh(
-      new THREE.BoxGeometry(this.playfieldWidth, this.floorThickness, rearFloorDepth),
-      floorMaterial,
-    );
-    rearFloor.position.set(0, this.floorY, rearFloorCenterZ);
-    rearFloor.castShadow = true;
-    rearFloor.receiveShadow = true;
-    this.scene.add(rearFloor);
-    this.addStaticBody(
-      vec3(this.playfieldWidth / 2, this.floorThickness / 2, rearFloorDepth / 2),
-      vec3(0, this.floorY, rearFloorCenterZ),
-    );
+    this.createPlayfieldFloorWithCenterHole(floorMaterial);
 
     const frontFloor = new THREE.Mesh(
       new THREE.BoxGeometry(frontFloorWidth, this.floorThickness, frontFloorDepth),
@@ -2658,13 +2675,573 @@ export class CoinPusherApp {
     }
   }
 
-  private addStaticBody(halfExtents: Vec3, position: Vec3, rotationX = 0, rotationZ = 0): void {
+  private addStaticBody(
+    halfExtents: Vec3,
+    position: Vec3,
+    rotationX = 0,
+    rotationZ = 0,
+    rotationY = 0,
+  ): void {
     this.physics.createStaticBox({
       halfExtents,
       position,
       rotationX,
+      rotationY,
       rotationZ,
     });
+  }
+
+  private addFloorSegment(
+    material: THREE.MeshStandardMaterial | null,
+    width: number,
+    depth: number,
+    centerX: number,
+    centerZ: number,
+    options?: { visible?: boolean },
+  ): void {
+    if (width <= 0.04 || depth <= 0.04) {
+      return;
+    }
+
+    if (options?.visible !== false && material) {
+      const segment = new THREE.Mesh(
+        new THREE.BoxGeometry(width, this.floorThickness, depth),
+        material,
+      );
+      segment.position.set(centerX, this.floorY, centerZ);
+      segment.castShadow = true;
+      segment.receiveShadow = true;
+      this.scene.add(segment);
+    }
+
+    this.addStaticBody(
+      vec3(width / 2, this.floorThickness / 2, depth / 2),
+      vec3(centerX, this.floorY, centerZ),
+    );
+  }
+
+  private createPlayfieldFloorWithCenterHole(floorMaterial: THREE.MeshStandardMaterial): void {
+    const radius = this.floorHoleRadius;
+    const playHalfW = this.playfieldWidth / 2;
+
+    // One continuous floor plate with a true circular hatch — no square cutout.
+    const floorShape = new THREE.Shape();
+    floorShape.moveTo(-playHalfW, this.floorBackZ);
+    floorShape.lineTo(playHalfW, this.floorBackZ);
+    floorShape.lineTo(playHalfW, this.sideExitLineZ);
+    floorShape.lineTo(-playHalfW, this.sideExitLineZ);
+    floorShape.lineTo(-playHalfW, this.floorBackZ);
+
+    const hatch = new THREE.Path();
+    hatch.absarc(
+      this.floorHoleCenterX,
+      this.floorHoleCenterZ,
+      radius,
+      0,
+      Math.PI * 2,
+      true,
+    );
+    floorShape.holes.push(hatch);
+
+    const floorGeometry = new THREE.ExtrudeGeometry(floorShape, {
+      depth: this.floorThickness,
+      bevelEnabled: false,
+      curveSegments: 64,
+    });
+    // Lay the shape onto XZ: shape Y → world Z, extrude → world -Y, then shift so
+    // the plate is centered like the box floors (center at floorY).
+    floorGeometry.rotateX(Math.PI / 2);
+    floorGeometry.translate(0, this.floorThickness / 2, 0);
+
+    const floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
+    floorMesh.position.set(0, this.floorY, 0);
+    floorMesh.castShadow = true;
+    floorMesh.receiveShadow = true;
+    this.scene.add(floorMesh);
+
+    // Invisible physics colliders: outer slabs + polar ring (circle open only).
+    this.addCircularHolePhysicsColliders(radius);
+
+    const shaftMaterial = new THREE.MeshStandardMaterial({
+      color: "#081018",
+      emissive: "#0a1824",
+      emissiveIntensity: 0.12,
+      metalness: 0.72,
+      roughness: 0.38,
+      side: THREE.DoubleSide,
+    });
+    const shaftCenterY = this.floorY - this.floorHoleShaftDepth / 2 - this.floorThickness * 0.15;
+    const shaftWall = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius + 0.02, radius + 0.02, this.floorHoleShaftDepth, 64, 1, true),
+      shaftMaterial,
+    );
+    shaftWall.position.set(this.floorHoleCenterX, shaftCenterY, this.floorHoleCenterZ);
+    shaftWall.castShadow = true;
+    shaftWall.receiveShadow = true;
+    this.scene.add(shaftWall);
+
+    const shaftFloor = new THREE.Mesh(
+      new THREE.CircleGeometry(radius + 0.06, 64),
+      shaftMaterial,
+    );
+    shaftFloor.rotation.x = -Math.PI / 2;
+    shaftFloor.position.set(
+      this.floorHoleCenterX,
+      this.floorY - this.floorHoleShaftDepth - this.floorThickness * 0.2,
+      this.floorHoleCenterZ,
+    );
+    shaftFloor.receiveShadow = true;
+    this.scene.add(shaftFloor);
+
+    this.createFloorHoleDashedRing(radius);
+    this.createCircularHoleCovers(radius, floorMaterial);
+  }
+
+  private createFloorHoleDashedRing(radius: number): void {
+    const segments = 96;
+    const surfaceY = this.getFloorSurfaceY() + 0.003;
+    const points: THREE.Vector3[] = [];
+
+    for (let index = 0; index <= segments; index += 1) {
+      const angle = (index / segments) * Math.PI * 2;
+      points.push(
+        new THREE.Vector3(
+          this.floorHoleCenterX + Math.cos(angle) * radius,
+          surfaceY,
+          this.floorHoleCenterZ + Math.sin(angle) * radius,
+        ),
+      );
+    }
+
+    const ring = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.LineDashedMaterial({
+        color: "#7ec8e3",
+        dashSize: 0.14,
+        gapSize: 0.1,
+        transparent: true,
+        opacity: 0.72,
+        depthWrite: false,
+      }),
+    );
+    ring.computeLineDistances();
+    ring.renderOrder = 2;
+    this.scene.add(ring);
+  }
+
+  private addCircularHolePhysicsColliders(radius: number): void {
+    const holeMinX = this.floorHoleCenterX - radius;
+    const holeMaxX = this.floorHoleCenterX + radius;
+    const holeMinZ = this.floorHoleCenterZ - radius;
+    const holeMaxZ = this.floorHoleCenterZ + radius;
+    const playHalfW = this.playfieldWidth / 2;
+
+    const backDepth = holeMinZ - this.floorBackZ;
+    if (backDepth > 0.04) {
+      this.addFloorSegment(
+        null,
+        this.playfieldWidth,
+        backDepth,
+        0,
+        (this.floorBackZ + holeMinZ) / 2,
+        { visible: false },
+      );
+    }
+
+    const frontDepth = this.sideExitLineZ - holeMaxZ;
+    if (frontDepth > 0.04) {
+      this.addFloorSegment(
+        null,
+        this.playfieldWidth,
+        frontDepth,
+        0,
+        (holeMaxZ + this.sideExitLineZ) / 2,
+        { visible: false },
+      );
+    }
+
+    const sideDepth = holeMaxZ - holeMinZ;
+    const leftWidth = playHalfW + holeMinX;
+    if (leftWidth > 0.04) {
+      this.addFloorSegment(
+        null,
+        leftWidth,
+        sideDepth,
+        (-playHalfW + holeMinX) / 2,
+        this.floorHoleCenterZ,
+        { visible: false },
+      );
+    }
+
+    const rightWidth = playHalfW - holeMaxX;
+    if (rightWidth > 0.04) {
+      this.addFloorSegment(
+        null,
+        rightWidth,
+        sideDepth,
+        (holeMaxX + playHalfW) / 2,
+        this.floorHoleCenterZ,
+        { visible: false },
+      );
+    }
+
+    // Cover square-corner leftovers outside the circle (physics only).
+    const segments = 32;
+    const outerRadius = radius * Math.SQRT2 + 0.04;
+    const ringThickness = outerRadius - radius;
+    const midRadius = radius + ringThickness * 0.5;
+
+    for (let index = 0; index < segments; index += 1) {
+      const angle = ((index + 0.5) / segments) * Math.PI * 2;
+      const span = (Math.PI * 2) / segments;
+      const chord = 2 * midRadius * Math.sin(span * 0.5);
+      this.addStaticBody(
+        vec3(ringThickness / 2, this.floorThickness / 2, Math.max(0.05, chord * 0.55)),
+        vec3(
+          this.floorHoleCenterX + Math.cos(angle) * midRadius,
+          this.floorY,
+          this.floorHoleCenterZ + Math.sin(angle) * midRadius,
+        ),
+        0,
+        0,
+        -angle,
+      );
+    }
+  }
+
+  private createCircularHoleCovers(
+    radius: number,
+    floorMaterial: THREE.MeshStandardMaterial,
+  ): void {
+    // Same look as the playfield so the closed hatch reads as continuous floor.
+    const coverMaterial = floorMaterial.clone();
+    const coverThickness = 0.05;
+    // Fill the hole almost to the rim; tiny clearance avoids z-fighting with the floor edge.
+    const coverRadius = radius - 0.004;
+    // Overlap past the diameter so the two halves meet without a center seam.
+    const seamOverlap = 0.02;
+    // Top of the lid flush with the floor surface.
+    const coverCenterY = this.getFloorSurfaceY() - coverThickness / 2;
+
+    for (const direction of [-1, 1] as const) {
+      const shape = new THREE.Shape();
+      if (direction > 0) {
+        shape.moveTo(-seamOverlap, -coverRadius);
+        shape.absarc(0, 0, coverRadius, -Math.PI / 2, Math.PI / 2, false);
+        shape.lineTo(-seamOverlap, coverRadius);
+        shape.lineTo(-seamOverlap, -coverRadius);
+      } else {
+        shape.moveTo(seamOverlap, coverRadius);
+        shape.absarc(0, 0, coverRadius, Math.PI / 2, (Math.PI * 3) / 2, false);
+        shape.lineTo(seamOverlap, -coverRadius);
+        shape.lineTo(seamOverlap, coverRadius);
+      }
+
+      const coverGeometry = new THREE.ExtrudeGeometry(shape, {
+        depth: coverThickness,
+        bevelEnabled: false,
+        curveSegments: 48,
+      });
+      coverGeometry.rotateX(Math.PI / 2);
+      coverGeometry.translate(0, coverThickness / 2, 0);
+
+      const coverMesh = new THREE.Mesh(coverGeometry, coverMaterial);
+      coverMesh.position.set(this.floorHoleCenterX, coverCenterY, this.floorHoleCenterZ);
+      coverMesh.castShadow = true;
+      coverMesh.receiveShadow = true;
+      this.scene.add(coverMesh);
+
+      const coverBody = this.physics.createKinematicBody(
+        vec3(
+          this.floorHoleCenterX + direction * (coverRadius * 0.5),
+          coverCenterY,
+          this.floorHoleCenterZ,
+        ),
+        0,
+        [
+          {
+            halfExtents: vec3(
+              coverRadius * 0.5 + seamOverlap * 0.5,
+              coverThickness / 2,
+              coverRadius,
+            ),
+            friction: 0.42,
+          },
+        ],
+      );
+
+      this.floorHoleCovers.push({
+        mesh: coverMesh,
+        body: coverBody,
+        closedX: this.floorHoleCenterX,
+        closedY: coverCenterY,
+        closedZ: this.floorHoleCenterZ,
+        bodyOffsetX: direction * (coverRadius * 0.5),
+        bodyOffsetY: 0,
+        slideX: direction * (coverRadius * 0.98),
+        dropY: 0.72,
+      });
+    }
+  }
+
+  private updateFloorHole(deltaSeconds: number): void {
+    const lerpSpeed = this.coinTowerPhase === "closing" ? 7.5 : 5.5;
+    this.floorHoleOpen = lerpNumber(this.floorHoleOpen, this.floorHoleTarget, Math.min(1, deltaSeconds * lerpSpeed));
+
+    for (const cover of this.floorHoleCovers) {
+      const open = this.floorHoleOpen;
+      const x = cover.closedX + cover.slideX * open;
+      const y = cover.closedY - cover.dropY * open;
+      const z = cover.closedZ;
+      cover.mesh.position.set(x, y, z);
+      cover.body.setNextKinematicPose(
+        x + cover.bodyOffsetX,
+        y + cover.bodyOffsetY,
+        z,
+        0,
+      );
+    }
+  }
+
+  private advanceCoinTower(deltaSeconds: number): void {
+    if (this.coinTowerPhase === "opening") {
+      if (this.floorHoleOpen >= 0.96) {
+        this.spawnCoinTower();
+        this.coinTowerPhase = "rising";
+        this.coinTowerRise = 0;
+      }
+      return;
+    }
+
+    if (this.coinTowerPhase === "rising") {
+      const riseDuration = 2.5;
+      this.coinTowerRise = Math.min(1, this.coinTowerRise + deltaSeconds / riseDuration);
+      if (this.coinTowerRise >= 1) {
+        this.coinTowerPhase = "closing";
+        this.floorHoleTarget = 0;
+        this.pushMessage("金币塔已升起，升降口关闭。");
+        this.renderState();
+      }
+      return;
+    }
+
+    if (this.coinTowerPhase === "closing" && this.floorHoleOpen <= 0.02) {
+      this.floorHoleOpen = 0;
+      this.coinTowerPhase = "stabilizing";
+      this.coinTowerStabilizeLeft = 0.85;
+      this.captureCoinTowerRestPoses();
+      this.lockCoinTowerBodies();
+      return;
+    }
+
+    if (this.coinTowerPhase === "stabilizing") {
+      this.coinTowerStabilizeLeft = Math.max(0, this.coinTowerStabilizeLeft - deltaSeconds);
+      this.lockCoinTowerBodies();
+      if (this.coinTowerStabilizeLeft <= 0) {
+        this.finalizeCoinTower();
+        this.coinTowerPhase = "idle";
+        this.renderState();
+      }
+    }
+  }
+
+  private applyCoinTowerLift(): void {
+    if (this.coinTowerPhase === "stabilizing") {
+      this.lockCoinTowerBodies();
+      return;
+    }
+    if (this.coinTowerPhase !== "rising" && this.coinTowerPhase !== "closing") {
+      return;
+    }
+
+    const eased =
+      this.coinTowerPhase === "closing" ? 1 : easeInOutCubic(this.coinTowerRise);
+    for (const item of this.items) {
+      if (!item.towerLift || !this.coinTowerItemIds.has(item.id)) {
+        continue;
+      }
+      const y = THREE.MathUtils.lerp(item.towerLift.startY, item.towerLift.targetY, eased);
+      item.body.position.set(item.towerLift.x, y, item.towerLift.z);
+      item.body.setVelocitySilent(0, 0, 0);
+      item.body.setAngularVelocitySilent(0, 0, 0);
+      item.body.sleep();
+    }
+  }
+
+  private captureCoinTowerRestPoses(): void {
+    this.coinTowerRestPoses.clear();
+    for (const item of this.items) {
+      if (!this.coinTowerItemIds.has(item.id) || !item.towerLift) {
+        continue;
+      }
+      this.coinTowerRestPoses.set(item.id, {
+        x: item.towerLift.x,
+        y: item.towerLift.targetY,
+        z: item.towerLift.z,
+      });
+    }
+  }
+
+  private lockCoinTowerBodies(): void {
+    for (const item of this.items) {
+      if (!this.coinTowerItemIds.has(item.id)) {
+        continue;
+      }
+      const rest = this.coinTowerRestPoses.get(item.id);
+      const lift = item.towerLift;
+      const x = rest?.x ?? lift?.x ?? item.body.position.x;
+      const y = rest?.y ?? lift?.targetY ?? item.body.position.y;
+      const z = rest?.z ?? lift?.z ?? item.body.position.z;
+      item.body.position.set(x, y, z);
+      item.body.setVelocitySilent(0, 0, 0);
+      item.body.setAngularVelocitySilent(0, 0, 0);
+      item.body.sleep();
+    }
+  }
+
+  private finalizeCoinTower(): void {
+    for (const item of this.items) {
+      if (!this.coinTowerItemIds.has(item.id)) {
+        continue;
+      }
+      delete item.towerLift;
+      const rest = this.coinTowerRestPoses.get(item.id);
+      if (rest) {
+        item.body.position.set(rest.x, rest.y, rest.z);
+      }
+      item.body.setVelocitySilent(0, 0, 0);
+      item.body.setAngularVelocitySilent(0, 0, 0);
+      item.body.sleep();
+      this.coinTowerAnchoredIds.add(item.id);
+    }
+    this.coinTowerItemIds.clear();
+  }
+
+  private maintainAnchoredCoinTower(): void {
+    if (this.coinTowerAnchoredIds.size === 0) {
+      return;
+    }
+
+    const pusherFrontZ = this.pusherBody
+      ? this.pusherBody.position.z + this.pusherDepth / 2
+      : this.pusherStartZ;
+    // Release once the pusher face reaches the tower so it can be pushed naturally.
+    const release = pusherFrontZ >= this.floorHoleCenterZ - 0.35;
+    if (release) {
+      this.coinTowerAnchoredIds.clear();
+      this.coinTowerRestPoses.clear();
+      return;
+    }
+
+    for (const item of this.items) {
+      if (!this.coinTowerAnchoredIds.has(item.id)) {
+        continue;
+      }
+      const rest = this.coinTowerRestPoses.get(item.id);
+      if (!rest) {
+        continue;
+      }
+      item.body.position.set(rest.x, rest.y, rest.z);
+      item.body.setVelocitySilent(0, 0, 0);
+      item.body.setAngularVelocitySilent(0, 0, 0);
+      item.body.sleep();
+    }
+  }
+
+  private requestCoinTower(): void {
+    if (!this.physicsReady) {
+      this.pushMessage("物理引擎还在初始化，请稍后再试。");
+      this.renderState();
+      return;
+    }
+    if (this.coinTowerPhase !== "idle") {
+      this.pushMessage("金币塔正在升降，请稍候。");
+      this.renderState();
+      return;
+    }
+
+    this.coinTowerPhase = "opening";
+    this.coinTowerRise = 0;
+    this.coinTowerStabilizeLeft = 0;
+    this.floorHoleTarget = 1;
+    this.coinTowerItemIds.clear();
+    this.coinTowerAnchoredIds.clear();
+    this.coinTowerRestPoses.clear();
+    this.pushMessage("地板升降口打开，金币塔正在升起。");
+    this.renderState();
+  }
+
+  private buildCoinTowerLayerOffsets(layer: number): Array<{ x: number; z: number }> {
+    // Tight hex packing: center coin + 6-coin ring (prototype “coin circle”).
+    const spacing = this.coinTowerCoinRadius * 2 * 0.995;
+    const ringRadius = spacing;
+    // Alternate layers rotate by half a slot so coins nest in the gaps below.
+    const angleOffset = (layer % 2) * (Math.PI / this.coinTowerRingCount);
+    const offsets: Array<{ x: number; z: number }> = [{ x: 0, z: 0 }];
+
+    for (let index = 0; index < this.coinTowerRingCount; index += 1) {
+      const angle = angleOffset + (index * Math.PI * 2) / this.coinTowerRingCount;
+      offsets.push({
+        x: Math.cos(angle) * ringRadius,
+        z: Math.sin(angle) * ringRadius,
+      });
+    }
+
+    return offsets;
+  }
+
+  private spawnCoinTower(): void {
+    const floorSurfaceY = this.getFloorSurfaceY();
+    const coinHalfHeight = this.coinTowerLayerStep * 0.5;
+    const towerBaseY =
+      floorSurfaceY - this.coinTowerLayers * this.coinTowerLayerStep - this.floorHoleShaftDepth * 0.72;
+
+    for (let layer = 0; layer < this.coinTowerLayers; layer += 1) {
+      const layerOffsets = this.buildCoinTowerLayerOffsets(layer);
+      const targetY = floorSurfaceY + coinHalfHeight + layer * this.coinTowerLayerStep;
+      const startY = towerBaseY + layer * this.coinTowerLayerStep;
+
+      for (const offset of layerOffsets) {
+        const x = this.floorHoleCenterX + offset.x;
+        const z = this.floorHoleCenterZ + offset.z;
+
+        const mesh = this.createCoinMesh();
+        mesh.position.set(x, startY, z);
+        this.scene.add(mesh);
+
+        const body = this.physics.createDynamicBody({
+          kind: "coin",
+          position: vec3(x, startY, z),
+          rotationX: 0,
+          velocity: vec3(0, 0, 0),
+          angularVelocity: vec3(0, 0, 0),
+          linearDamping: 3.5,
+          angularDamping: 4.5,
+        });
+        body.sleep();
+
+        const item: DropItem = {
+          id: randomId("tower-coin"),
+          type: "coin",
+          body,
+          mesh,
+          baseReward: BASE_CONFIG.baseCoinReward,
+          spawnTime: performance.now(),
+          collected: false,
+          towerLift: { x, z, startY, targetY },
+        };
+        this.items.push(item);
+        this.coinTowerItemIds.add(item.id);
+      }
+    }
+  }
+
+  private isTowerLiftItem(item: DropItem): boolean {
+    return (
+      Boolean(item.towerLift) ||
+      this.coinTowerItemIds.has(item.id) ||
+      this.coinTowerAnchoredIds.has(item.id)
+    );
   }
 
   private getFloorSurfaceY(_z?: number): number {
@@ -2694,6 +3271,7 @@ export class CoinPusherApp {
 
   private bindControls(): void {
     this.ui.dropButton.addEventListener("click", () => this.requestDrop());
+    this.ui.coinTowerButton.addEventListener("click", () => this.requestCoinTower());
     this.ui.autoDropButton.addEventListener("click", () => {
       this.state.autoDropEnabled = !this.state.autoDropEnabled;
       this.pushMessage(this.state.autoDropEnabled ? "自动投币已开启。" : "自动投币已关闭。");
@@ -3168,6 +3746,8 @@ export class CoinPusherApp {
 
       this.updateAutoDrop(delta);
       if (!this.physicsReady) {
+        this.updateFloorHole(delta);
+        this.advanceCoinTower(delta);
         this.processScheduledActions(now);
         this.updateTimers(delta);
         this.sampleFps(now);
@@ -3179,8 +3759,12 @@ export class CoinPusherApp {
       this.updatePusher(delta);
       this.updateCoinChute(delta);
       this.updatePusherBackWallDecor(delta);
+      this.updateFloorHole(delta);
+      this.advanceCoinTower(delta);
       this.applyPusherAssist();
       this.stepPhysics(delta);
+      this.applyCoinTowerLift();
+      this.maintainAnchoredCoinTower();
       this.syncMeshes();
       this.resolveCollections();
       this.processScheduledActions(now);
@@ -3337,6 +3921,9 @@ export class CoinPusherApp {
       if (item.collected) {
         continue;
       }
+      if (this.isTowerLiftItem(item)) {
+        continue;
+      }
 
       const { x, y, z } = item.body.position;
       if (z < this.floorBackZ - 0.2 || z > this.floorFrontZ + 0.12) {
@@ -3437,6 +4024,9 @@ export class CoinPusherApp {
       if (item.collected || item.body.isSleeping()) {
         continue;
       }
+      if (this.isTowerLiftItem(item)) {
+        continue;
+      }
       if (Math.abs(item.body.position.x) > this.pusherWidth / 2 + 0.03) {
         continue;
       }
@@ -3510,6 +4100,9 @@ export class CoinPusherApp {
   private resolveCollections(): void {
     for (const item of this.items) {
       if (item.collected) {
+        continue;
+      }
+      if (this.isTowerLiftItem(item)) {
         continue;
       }
 
@@ -3767,6 +4360,9 @@ export class CoinPusherApp {
     this.ui.drops.textContent = String(this.state.drops);
     this.ui.activeBodies.textContent = String(this.items.length);
     this.ui.autoDropButton.textContent = this.state.autoDropEnabled ? "自动投币：开" : "自动投币：关";
+    this.ui.coinTowerButton.disabled = !this.physicsReady || this.coinTowerPhase !== "idle";
+    this.ui.coinTowerButton.textContent =
+      this.coinTowerPhase === "idle" ? "升起金币塔" : "金币塔升降中…";
 
     const bonusRatio = clamp(this.displayedBonusCharge / this.state.bonusThreshold, 0, 1);
     this.ui.bonusBarFill.style.transform = `scaleX(${bonusRatio})`;
@@ -4017,6 +4613,11 @@ export class CoinPusherApp {
     if (key === " ") {
       event.preventDefault();
       this.requestDrop();
+      return;
+    }
+    if (key === "t") {
+      event.preventDefault();
+      this.requestCoinTower();
       return;
     }
     if (event.key === "F1") {

@@ -269,6 +269,18 @@ input {
   font-weight: 700;
 }
 
+.action-button-accent {
+  background: linear-gradient(135deg, #ffd166 0%, #f4a127 100%);
+  color: #2a1800;
+  font-weight: 700;
+}
+
+.action-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .task-list {
   display: flex;
   flex-direction: column;

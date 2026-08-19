@@ -64,6 +64,13 @@ export interface DropItem {
   baseReward: number;
   spawnTime: number;
   collected: boolean;
+  /** When set, body pose is driven by the coin-tower lift instead of physics. */
+  towerLift?: {
+    x: number;
+    z: number;
+    startY: number;
+    targetY: number;
+  };
 }
 
 export interface ScheduledAction {
