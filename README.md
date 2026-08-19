@@ -11,7 +11,9 @@
 - 推盘、硬币、侧沿圆弧滑道、前方开口三槽具备基础物理和视觉反馈
 - 给开发者保留快速调试入口
 
-![preview](artifacts/review-shot-fast-loop-tilt.png)
+![preview](artifacts/review-shot-coin-tower-risen.png)
+
+![coin tower hatch closed](artifacts/review-shot-coin-tower-hatch.png)
 
 ## 当前状态
 
