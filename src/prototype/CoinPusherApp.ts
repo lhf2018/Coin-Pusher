@@ -125,6 +125,17 @@ export class CoinPusherApp {
 
   private pusherMesh!: THREE.Group;
   private pusherBody!: PhysicsBody;
+  private readonly pusherLedStrips: Array<{
+    segments: THREE.MeshStandardMaterial[];
+    speed: number;
+    phase: number;
+    tail: number;
+    mode: "marquee" | "wave" | "burst" | "spark" | "pattern";
+    cols?: number;
+    rows?: number;
+  }> = [];
+  private pusherDecorElapsed = 0;
+  private readonly ledGlyphCache = new Map<string, Uint8Array>();
   private debugPanelBuilt = false;
   private physicsReady = false;
   private physicsBackend: "rapier" | "taichi-hybrid" | "probing" | "failed" = "probing";
@@ -282,7 +293,7 @@ export class CoinPusherApp {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.14;
     this.ui.viewport.append(this.renderer.domElement);
 
     this.camera.position.set(0, 5.95, 11.9);
@@ -302,13 +313,13 @@ export class CoinPusherApp {
   }
 
   private configureScene(): void {
-    this.scene.background = new THREE.Color("#204762");
-    this.scene.fog = new THREE.Fog("#204762", 22, 36);
+    this.scene.background = new THREE.Color("#2a2038");
+    this.scene.fog = new THREE.Fog("#342840", 18, 38);
 
-    const hemi = new THREE.HemisphereLight("#b1e0ff", "#082238", 1.12);
+    const hemi = new THREE.HemisphereLight("#ffe8cc", "#241828", 1.08);
     this.scene.add(hemi);
 
-    const key = new THREE.SpotLight("#ffd59b", 154, 38, 0.34, 0.55, 1);
+    const key = new THREE.SpotLight("#ffe8c6", 168, 38, 0.34, 0.55, 1);
     key.position.set(-3.4, 11.5, 8.2);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
@@ -318,16 +329,16 @@ export class CoinPusherApp {
     key.target.position.set(0, 0.42, 1.55);
     this.scene.add(key, key.target);
 
-    const sideKey = new THREE.SpotLight("#7fd2ff", 68, 28, 0.5, 0.7, 2);
+    const sideKey = new THREE.SpotLight("#ffc8e8", 58, 28, 0.5, 0.7, 2);
     sideKey.position.set(5.8, 5.6, 4.6);
     sideKey.target.position.set(0, 0.34, 1.95);
     this.scene.add(sideKey, sideKey.target);
 
-    const rim = new THREE.PointLight("#42d7ff", 22, 22, 2);
+    const rim = new THREE.PointLight("#ff6ec7", 18, 22, 2);
     rim.position.set(-4.6, 3.2, -0.3);
     this.scene.add(rim);
 
-    const frontFill = new THREE.PointLight("#9cc8ff", 54, 24, 2);
+    const frontFill = new THREE.PointLight("#ffd49a", 46, 24, 2);
     frontFill.position.set(0, 1.6, 7.8);
     this.scene.add(frontFill);
 
@@ -338,6 +349,18 @@ export class CoinPusherApp {
     const payoutWarm = new THREE.PointLight("#ffd49a", 8, 6.5, 2.2);
     payoutWarm.position.set(0, -0.12, this.collectionCenterZ - 0.02);
     this.scene.add(payoutWarm);
+
+    const hallNeonLeft = new THREE.PointLight("#ff5fae", 20, 20, 2);
+    hallNeonLeft.position.set(-5.8, 4.2, -4.2);
+    this.scene.add(hallNeonLeft);
+
+    const hallNeonRight = new THREE.PointLight("#6ee8ff", 20, 20, 2);
+    hallNeonRight.position.set(5.8, 4.2, -4.2);
+    this.scene.add(hallNeonRight);
+
+    const hallOverhead = new THREE.PointLight("#ffd166", 30, 28, 2);
+    hallOverhead.position.set(0, 6.8, -2.4);
+    this.scene.add(hallOverhead);
   }
 
   private createTable(): void {
@@ -691,21 +714,13 @@ export class CoinPusherApp {
     apertureWall.receiveShadow = true;
     this.scene.add(apertureWall);
 
-    const upperPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(wallWidth - 0.55, 1.55),
-      new THREE.MeshPhysicalMaterial({
-        color: "#2c526b",
-        emissive: "#123246",
-        metalness: 0.46,
-        roughness: 0.42,
-        clearcoat: 0.16,
-        clearcoatRoughness: 0.3,
-        transparent: true,
-        opacity: 0.92,
-      }),
+    this.createPusherFrontLedCrown(
+      wallWidth,
+      holeWidth,
+      holeHeight,
+      holeCenterY,
+      apertureZ + faceThickness / 2 + 0.008,
     );
-    upperPanel.position.set(0, holeCenterY + holeHeight / 2 + 1.05, apertureZ + faceThickness / 2 + 0.008);
-    this.scene.add(upperPanel);
 
     const accentBar = new THREE.Mesh(
       new THREE.BoxGeometry(wallWidth - 0.7, 0.07, 0.04),
@@ -787,20 +802,1123 @@ export class CoinPusherApp {
       shellMaterial,
       true,
     );
+
+    this.createPusherBackWallDecor({
+      backFaceZ: tunnelCenterZ - tunnelDepth / 2 + 0.055,
+      wallWidth,
+      holeWidth,
+      holeHeight,
+      holeCenterY,
+      sideWidth: shellSideWidth,
+      topHeight,
+      bottomHeight,
+    });
+  }
+
+  private createPusherBackWallDecor(layout: {
+    backFaceZ: number;
+    wallWidth: number;
+    holeWidth: number;
+    holeHeight: number;
+    holeCenterY: number;
+    sideWidth: number;
+    topHeight: number;
+    bottomHeight: number;
+  }): void {
+    const { backFaceZ, wallWidth, holeWidth, holeHeight, holeCenterY, sideWidth, topHeight, bottomHeight } =
+      layout;
+    const techColors = ["#00e8ff", "#4da6ff", "#00f5d4", "#7b8cff", "#ff6ec7", "#ffd166"];
+
+    const mainWidth = Math.min(wallWidth - 0.55, holeWidth + 1.35);
+    const mainHeight = Math.max(0.72, topHeight - 0.28);
+    const mainY = holeCenterY + holeHeight / 2 + mainHeight / 2 + 0.2;
+
+    this.addLedTechFrame(mainWidth, mainHeight, 0, mainY, backFaceZ);
+    this.addLedMatrix(
+      0,
+      mainY,
+      backFaceZ + 0.012,
+      24,
+      12,
+      mainWidth - 0.12,
+      mainHeight - 0.12,
+      techColors,
+      "pattern",
+      1.35,
+      0,
+    );
+
+    const sidePanelWidth = Math.max(0.72, sideWidth - 0.02);
+    const sidePanelHeight = Math.min(holeHeight * 0.92, 1.45);
+    const sideX = holeWidth / 2 + sidePanelWidth / 2 + 0.08;
+
+    this.addLedTechFrame(sidePanelWidth, sidePanelHeight, -sideX, holeCenterY + 0.04, backFaceZ);
+    this.addLedMatrix(
+      -sideX,
+      holeCenterY + 0.04,
+      backFaceZ + 0.012,
+      8,
+      16,
+      sidePanelWidth - 0.1,
+      sidePanelHeight - 0.1,
+      ["#00e8ff", "#7b8cff", "#ff6ec7"],
+      "pattern",
+      1.55,
+      0.8,
+    );
+
+    this.addLedTechFrame(sidePanelWidth, sidePanelHeight, sideX, holeCenterY + 0.04, backFaceZ);
+    this.addLedMatrix(
+      sideX,
+      holeCenterY + 0.04,
+      backFaceZ + 0.012,
+      8,
+      16,
+      sidePanelWidth - 0.1,
+      sidePanelHeight - 0.1,
+      ["#00f5d4", "#4da6ff", "#ffd166"],
+      "pattern",
+      1.55,
+      2.4,
+    );
+
+    if (bottomHeight > 0.28) {
+      const bannerWidth = Math.min(holeWidth + 0.55, wallWidth - 1.1);
+      const bannerHeight = Math.min(0.38, bottomHeight - 0.12);
+      const bannerY = holeCenterY - holeHeight / 2 - bannerHeight / 2 - 0.1;
+      this.addLedTechFrame(bannerWidth, bannerHeight, 0, bannerY, backFaceZ);
+      this.addLedStripLine(
+        0,
+        bannerY,
+        backFaceZ + 0.012,
+        bannerWidth - 0.1,
+        26,
+        "horizontal",
+        techColors,
+        9.5,
+        0.4,
+      );
+    }
+
+    this.addLedStripLine(
+      0,
+      mainY + mainHeight / 2 + 0.1,
+      backFaceZ + 0.015,
+      mainWidth + 0.2,
+      24,
+      "horizontal",
+      techColors,
+      11,
+      0,
+    );
+
+    for (const direction of [-1, 1] as const) {
+      this.addLedStripLine(
+        direction * (sideX + sidePanelWidth / 2 + 0.08),
+        holeCenterY,
+        backFaceZ + 0.015,
+        sidePanelHeight + 0.15,
+        14,
+        "vertical",
+        techColors,
+        8.5,
+        direction === -1 ? 1.4 : 2.8,
+      );
+    }
+
+    this.addLedPerimeterChase(
+      holeWidth + 0.18,
+      holeHeight + 0.12,
+      0,
+      holeCenterY,
+      backFaceZ + 0.018,
+      techColors,
+      13,
+    );
+
+    const tunnelGlow = new THREE.PointLight("#00e8ff", 14, 5.5, 2);
+    tunnelGlow.position.set(0, holeCenterY + 0.55, backFaceZ - 0.35);
+    this.scene.add(tunnelGlow);
+
+    const sideGlowLeft = new THREE.PointLight("#7b8cff", 7, 3.2, 2);
+    sideGlowLeft.position.set(-sideX, holeCenterY, backFaceZ - 0.2);
+    this.scene.add(sideGlowLeft);
+
+    const sideGlowRight = new THREE.PointLight("#00f5d4", 7, 3.2, 2);
+    sideGlowRight.position.set(sideX, holeCenterY, backFaceZ - 0.2);
+    this.scene.add(sideGlowRight);
+  }
+
+  private createPusherFrontLedCrown(
+    wallWidth: number,
+    holeWidth: number,
+    holeHeight: number,
+    holeCenterY: number,
+    faceZ: number,
+  ): void {
+    const panelWidth = wallWidth - 0.55;
+    const panelHeight = 1.55;
+    const panelY = holeCenterY + holeHeight / 2 + 1.05;
+    const techColors = ["#00e8ff", "#4da6ff", "#00f5d4", "#7b8cff", "#ff6ec7"];
+
+    this.addLedTechFrame(panelWidth, panelHeight, 0, panelY, faceZ - 0.004);
+    this.addLedMatrix(
+      0,
+      panelY,
+      faceZ,
+      30,
+      9,
+      panelWidth - 0.14,
+      panelHeight - 0.14,
+      techColors,
+      "pattern",
+      1.7,
+      1.5,
+    );
+
+    this.addLedStripLine(
+      0,
+      panelY + panelHeight / 2 + 0.07,
+      faceZ + 0.012,
+      panelWidth + 0.08,
+      22,
+      "horizontal",
+      techColors,
+      12,
+      0.2,
+    );
+  }
+
+  private addLedTechFrame(
+    width: number,
+    height: number,
+    x: number,
+    y: number,
+    z: number,
+    depth = 0.06,
+  ): void {
+    const frame = new THREE.Mesh(
+      new THREE.BoxGeometry(width + 0.1, height + 0.1, depth),
+      new THREE.MeshStandardMaterial({
+        color: "#0a1018",
+        emissive: "#04060c",
+        metalness: 0.84,
+        roughness: 0.26,
+      }),
+    );
+    frame.position.set(x, y, z - depth / 2 - 0.008);
+    this.scene.add(frame);
+
+    const edgeMaterial = new THREE.MeshStandardMaterial({
+      color: "#00e8ff",
+      emissive: "#00e8ff",
+      emissiveIntensity: 0.35,
+      metalness: 0.62,
+      roughness: 0.18,
+    });
+    for (const [edgeWidth, edgeHeight, offsetX, offsetY] of [
+      [width + 0.12, 0.018, 0, height / 2 + 0.04],
+      [width + 0.12, 0.018, 0, -height / 2 - 0.04],
+      [0.018, height + 0.12, -width / 2 - 0.04, 0],
+      [0.018, height + 0.12, width / 2 + 0.04, 0],
+    ] as const) {
+      const edge = new THREE.Mesh(new THREE.BoxGeometry(edgeWidth, edgeHeight, 0.02), edgeMaterial);
+      edge.position.set(x + offsetX, y + offsetY, z + 0.004);
+      this.scene.add(edge);
+    }
+  }
+
+  private addLedMatrix(
+    x: number,
+    y: number,
+    z: number,
+    cols: number,
+    rows: number,
+    width: number,
+    height: number,
+    colors: string[],
+    mode: "marquee" | "wave" | "burst" | "spark" | "pattern",
+    speed: number,
+    phase: number,
+  ): void {
+    const cellW = width / cols;
+    const cellH = height / rows;
+    const gap = 0.014;
+    const segments: THREE.MeshStandardMaterial[] = [];
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        const color = colors[(col + row * 2) % colors.length];
+        const material = new THREE.MeshStandardMaterial({
+          color: "#061018",
+          emissive: color,
+          emissiveIntensity: 0.05,
+          metalness: 0.48,
+          roughness: 0.2,
+        });
+        segments.push(material);
+
+        const cell = new THREE.Mesh(
+          new THREE.BoxGeometry(cellW - gap, cellH - gap, 0.016),
+          material,
+        );
+        cell.position.set(
+          x - width / 2 + cellW / 2 + col * cellW,
+          y - height / 2 + cellH / 2 + row * cellH,
+          z,
+        );
+        this.scene.add(cell);
+      }
+    }
+
+    this.pusherLedStrips.push({ segments, speed, phase, tail: 5, mode, cols, rows });
+  }
+
+  private addLedStripLine(
+    x: number,
+    y: number,
+    z: number,
+    length: number,
+    count: number,
+    orientation: "horizontal" | "vertical",
+    colors: string[],
+    speed: number,
+    phase: number,
+  ): void {
+    const segments: THREE.MeshStandardMaterial[] = [];
+    const cellLength = length / count;
+    const gap = 0.012;
+
+    for (let index = 0; index < count; index += 1) {
+      const color = colors[index % colors.length];
+      const material = new THREE.MeshStandardMaterial({
+        color: "#061018",
+        emissive: color,
+        emissiveIntensity: 0.05,
+        metalness: 0.5,
+        roughness: 0.18,
+      });
+      segments.push(material);
+
+      const size =
+        orientation === "horizontal"
+          ? [cellLength - gap, 0.038, 0.018] as const
+          : [0.038, cellLength - gap, 0.018] as const;
+      const cell = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+      const offset = -length / 2 + cellLength / 2 + index * cellLength;
+      cell.position.set(
+        orientation === "horizontal" ? x + offset : x,
+        orientation === "horizontal" ? y : y + offset,
+        z,
+      );
+      this.scene.add(cell);
+    }
+
+    this.pusherLedStrips.push({ segments, speed, phase, tail: 4, mode: "marquee" });
+  }
+
+  private addLedPerimeterChase(
+    width: number,
+    height: number,
+    x: number,
+    y: number,
+    z: number,
+    colors: string[],
+    speed: number,
+  ): void {
+    const segments: THREE.MeshStandardMaterial[] = [];
+    const perSide = 10;
+    const positions: Array<[number, number]> = [];
+
+    for (let index = 0; index < perSide; index += 1) {
+      const t = index / (perSide - 1);
+      positions.push([x - width / 2 + t * width, y + height / 2]);
+    }
+    for (let index = 1; index < perSide; index += 1) {
+      const t = index / (perSide - 1);
+      positions.push([x + width / 2, y + height / 2 - t * height]);
+    }
+    for (let index = 1; index < perSide; index += 1) {
+      const t = index / (perSide - 1);
+      positions.push([x + width / 2 - t * width, y - height / 2]);
+    }
+    for (let index = 1; index < perSide - 1; index += 1) {
+      const t = index / (perSide - 1);
+      positions.push([x - width / 2, y - height / 2 + t * height]);
+    }
+
+    positions.forEach(([px, py], index) => {
+      const color = colors[index % colors.length];
+      const material = new THREE.MeshStandardMaterial({
+        color: "#061018",
+        emissive: color,
+        emissiveIntensity: 0.05,
+        metalness: 0.5,
+        roughness: 0.18,
+      });
+      segments.push(material);
+
+      const cell = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.042, 0.02), material);
+      cell.position.set(px, py, z);
+      this.scene.add(cell);
+    });
+
+    this.pusherLedStrips.push({ segments, speed, phase: 0, tail: 6, mode: "marquee" });
+  }
+
+  private updatePusherBackWallDecor(deltaSeconds: number): void {
+    if (this.pusherLedStrips.length === 0) {
+      return;
+    }
+
+    this.pusherDecorElapsed += deltaSeconds;
+    const time = this.pusherDecorElapsed;
+
+    for (const strip of this.pusherLedStrips) {
+      const count = strip.segments.length;
+      if (count === 0) {
+        continue;
+      }
+
+      if (strip.mode === "marquee") {
+        const head = (time * strip.speed + strip.phase) % count;
+        strip.segments.forEach((material, index) => {
+          let distance = index - head;
+          if (distance < 0) {
+            distance += count;
+          }
+          material.emissiveIntensity =
+            distance < 0.6 ? 2.25 : distance < strip.tail ? 1.35 - distance * 0.22 : 0.04;
+        });
+        continue;
+      }
+
+      if (strip.mode === "pattern" && strip.cols && strip.rows) {
+        this.updateLedPatternStrip(strip, time);
+        continue;
+      }
+
+      if (strip.mode === "wave" && strip.cols && strip.rows) {
+        strip.segments.forEach((material, index) => {
+          const col = index % strip.cols!;
+          const row = Math.floor(index / strip.cols!);
+          const wave = Math.sin(col * 0.72 + row * 0.48 - time * strip.speed + strip.phase);
+          material.emissiveIntensity = 0.04 + (wave * 0.5 + 0.5) * 1.85;
+        });
+        continue;
+      }
+
+      if (strip.mode === "burst" && strip.cols && strip.rows) {
+        const centerCol = (strip.cols - 1) / 2;
+        const centerRow = (strip.rows - 1) / 2;
+        const maxRadius = Math.hypot(centerCol, centerRow) + 1.2;
+        const radius = (time * strip.speed + strip.phase) % (maxRadius + 1.5);
+        strip.segments.forEach((material, index) => {
+          const col = index % strip.cols!;
+          const row = Math.floor(index / strip.cols!);
+          const distance = Math.hypot(col - centerCol, row - centerRow);
+          const band = Math.abs(distance - radius);
+          material.emissiveIntensity = band < 0.85 ? 2.1 - band * 0.9 : 0.03;
+        });
+        continue;
+      }
+
+      if (strip.mode === "spark" && strip.cols && strip.rows) {
+        const cycle = Math.floor(time * strip.speed + strip.phase);
+        strip.segments.forEach((material, index) => {
+          const col = index % strip.cols!;
+          const row = Math.floor(index / strip.cols!);
+          const hash = (col * 17 + row * 31 + cycle * 13) % 97;
+          const flicker = Math.sin(time * 11 + index * 0.7 + strip.phase);
+          const active = hash > 68 || (hash > 48 && flicker > 0.35);
+          material.emissiveIntensity = active ? 0.85 + flicker * 0.55 : 0.03 + Math.max(flicker, 0) * 0.06;
+        });
+      }
+    }
+  }
+
+  private updateLedPatternStrip(
+    strip: {
+      segments: THREE.MeshStandardMaterial[];
+      speed: number;
+      phase: number;
+      cols?: number;
+      rows?: number;
+    },
+    time: number,
+  ): void {
+    const cols = strip.cols!;
+    const rows = strip.rows!;
+    const period = Math.max(1.05, 2.35 / strip.speed);
+    const local = (time + strip.phase) % period;
+    const cycle = Math.floor((time + strip.phase) / period);
+    const flashWindow = 0.55;
+    const flashProgress = local / flashWindow;
+    const isFlashing = local < flashWindow;
+
+    // Idle: almost dark with rare twinkles, then suddenly stamp a glyph.
+    if (!isFlashing) {
+      strip.segments.forEach((material, index) => {
+        const hash = (index * 19 + cycle * 7) % 53;
+        const twinkle = hash > 48 ? 0.18 + Math.sin(time * 14 + index) * 0.08 : 0.02;
+        material.emissiveIntensity = twinkle;
+      });
+      return;
+    }
+
+    const glyphNames = this.getLedGlyphNames(cols, rows);
+    const glyphName = glyphNames[cycle % glyphNames.length];
+    const mask = this.getLedGlyphMask(glyphName, cols, rows, cycle);
+    const blink =
+      flashProgress < 0.08 || (flashProgress > 0.18 && flashProgress < 0.28)
+        ? 0.15
+        : flashProgress > 0.82
+          ? Math.max(0, 1 - (flashProgress - 0.82) / 0.18)
+          : 1;
+    const punch = flashProgress < 0.12 ? 2.55 : 2.05;
+
+    strip.segments.forEach((material, index) => {
+      if (mask[index]) {
+        material.emissiveIntensity = punch * blink;
+      } else {
+        material.emissiveIntensity = blink > 0.8 ? 0.04 : 0.02;
+      }
+    });
+  }
+
+  private getLedGlyphNames(cols: number, rows: number): string[] {
+    if (cols >= 18) {
+      return ["star", "lightning", "boltBurst", "diamond", "arrow", "sparkCross", "starField", "zigzag"];
+    }
+    if (rows >= 12) {
+      return ["lightning", "star", "arrow", "sparkCross", "boltBurst", "diamond"];
+    }
+    return ["star", "lightning", "arrow", "sparkCross", "diamond", "zigzag"];
+  }
+
+  private getLedGlyphMask(name: string, cols: number, rows: number, seed: number): Uint8Array {
+    const key = `${name}:${cols}x${rows}:${seed % 4}`;
+    const cached = this.ledGlyphCache.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const mask = new Uint8Array(cols * rows);
+    const stamp = (glyph: string[], offsetX = 0, offsetY = 0): void => {
+      const gw = glyph[0]?.length ?? 0;
+      const gh = glyph.length;
+      const originX = Math.floor((cols - gw) / 2) + offsetX;
+      const originY = Math.floor((rows - gh) / 2) + offsetY;
+      for (let row = 0; row < gh; row += 1) {
+        for (let col = 0; col < gw; col += 1) {
+          if (glyph[row][col] !== "#") {
+            continue;
+          }
+          const x = originX + col;
+          // Matrix row 0 is the bottom of the panel; flip so glyph row 0 stays visually on top.
+          const y = originY + (gh - 1 - row);
+          if (x < 0 || y < 0 || x >= cols || y >= rows) {
+            continue;
+          }
+          mask[y * cols + x] = 1;
+        }
+      }
+    };
+
+    const variant = seed % 4;
+    if (name === "star") {
+      stamp(this.ledGlyphStar(), variant === 1 ? -2 : variant === 2 ? 2 : 0, variant === 3 ? 1 : 0);
+      if (cols >= 18) {
+        stamp(this.ledGlyphMiniStar(), -Math.floor(cols * 0.28), -Math.floor(rows * 0.18));
+        stamp(this.ledGlyphMiniStar(), Math.floor(cols * 0.26), Math.floor(rows * 0.16));
+      }
+    } else if (name === "lightning") {
+      stamp(this.ledGlyphLightning(), variant === 1 ? -1 : variant === 2 ? 1 : 0, 0);
+    } else if (name === "boltBurst") {
+      stamp(this.ledGlyphLightning(), -Math.max(1, Math.floor(cols * 0.12)), 0);
+      stamp(this.ledGlyphMiniStar(), Math.floor(cols * 0.22), -Math.floor(rows * 0.2));
+      stamp(this.ledGlyphMiniStar(), Math.floor(cols * 0.18), Math.floor(rows * 0.22));
+    } else if (name === "diamond") {
+      stamp(this.ledGlyphDiamond(), 0, 0);
+    } else if (name === "arrow") {
+      stamp(this.ledGlyphArrow(), 0, variant % 2 === 0 ? 0 : 1);
+    } else if (name === "sparkCross") {
+      stamp(this.ledGlyphSparkCross(), 0, 0);
+      if (cols >= 16) {
+        stamp(this.ledGlyphMiniStar(), -Math.floor(cols * 0.3), 0);
+        stamp(this.ledGlyphMiniStar(), Math.floor(cols * 0.3), 0);
+      }
+    } else if (name === "starField") {
+      stamp(this.ledGlyphMiniStar(), -Math.floor(cols * 0.28), -Math.floor(rows * 0.2));
+      stamp(this.ledGlyphStar(), 0, 0);
+      stamp(this.ledGlyphMiniStar(), Math.floor(cols * 0.3), Math.floor(rows * 0.18));
+      stamp(this.ledGlyphMiniStar(), Math.floor(cols * 0.08), -Math.floor(rows * 0.28));
+    } else if (name === "zigzag") {
+      stamp(this.ledGlyphZigzag(cols, rows), 0, 0);
+    } else {
+      stamp(this.ledGlyphStar(), 0, 0);
+    }
+
+    this.ledGlyphCache.set(key, mask);
+    return mask;
+  }
+
+  private ledGlyphStar(): string[] {
+    return [
+      "...#...",
+      "...#...",
+      "##.#.##",
+      ".#####.",
+      "##.#.##",
+      "...#...",
+      "...#...",
+    ];
+  }
+
+  private ledGlyphMiniStar(): string[] {
+    return [
+      ".#.",
+      "###",
+      ".#.",
+    ];
+  }
+
+  private ledGlyphLightning(): string[] {
+    return [
+      "..###.",
+      ".###..",
+      ".##...",
+      "####..",
+      ".###..",
+      "..##..",
+      "..###.",
+      ".###..",
+      ".##...",
+    ];
+  }
+
+  private ledGlyphDiamond(): string[] {
+    return [
+      "...#...",
+      "..###..",
+      ".#####.",
+      "#######",
+      ".#####.",
+      "..###..",
+      "...#...",
+    ];
+  }
+
+  private ledGlyphArrow(): string[] {
+    return [
+      "...#...",
+      "..###..",
+      ".#####.",
+      "...#...",
+      "...#...",
+      "...#...",
+      "...#...",
+    ];
+  }
+
+  private ledGlyphSparkCross(): string[] {
+    return [
+      "#.....#",
+      ".#...#.",
+      "..#.#..",
+      "...#...",
+      "..#.#..",
+      ".#...#.",
+      "#.....#",
+    ];
+  }
+
+  private ledGlyphZigzag(cols: number, rows: number): string[] {
+    const width = Math.min(cols, 11);
+    const height = Math.min(rows, 7);
+    const lines: string[] = [];
+    for (let row = 0; row < height; row += 1) {
+      let line = "";
+      for (let col = 0; col < width; col += 1) {
+        const on =
+          col === Math.floor((row / Math.max(height - 1, 1)) * (width - 1)) ||
+          col === Math.floor(((height - 1 - row) / Math.max(height - 1, 1)) * (width - 1));
+        line += on ? "#" : ".";
+      }
+      lines.push(line);
+    }
+    return lines;
+  }
+
+  private createAmusementParkBackdrop(): void {
+    const hallBackZ = this.floorBackZ - 5.6;
+    const hallWidth = TABLE.width + 7.2;
+    const hallHeight = 7.4;
+    const wallMaterial = new THREE.MeshStandardMaterial({
+      color: "#3a2848",
+      emissive: "#221430",
+      metalness: 0.08,
+      roughness: 0.88,
+    });
+
+    const ceiling = new THREE.Mesh(
+      new THREE.PlaneGeometry(hallWidth + 4, 16),
+      new THREE.MeshStandardMaterial({
+        color: "#221828",
+        emissive: "#140e1c",
+        metalness: 0.04,
+        roughness: 0.92,
+      }),
+    );
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.set(0, hallHeight, -1.2);
+    this.scene.add(ceiling);
+
+    const hallFloor = new THREE.Mesh(
+      new THREE.PlaneGeometry(hallWidth + 6, 18),
+      new THREE.MeshStandardMaterial({
+        map: this.createHallFloorTexture(),
+        color: "#ffffff",
+        emissive: "#181020",
+        emissiveIntensity: 0.28,
+        metalness: 0.12,
+        roughness: 0.78,
+      }),
+    );
+    hallFloor.rotation.x = -Math.PI / 2;
+    hallFloor.position.set(0, -2.38, -1.8);
+    hallFloor.receiveShadow = true;
+    this.scene.add(hallFloor);
+
+    const backWall = new THREE.Mesh(new THREE.PlaneGeometry(hallWidth, hallHeight), wallMaterial);
+    backWall.position.set(0, hallHeight / 2 - 1.1, hallBackZ);
+    this.scene.add(backWall);
+
+    for (const direction of [-1, 1] as const) {
+      const sideWall = new THREE.Mesh(new THREE.PlaneGeometry(12, hallHeight), wallMaterial);
+      sideWall.position.set(direction * (hallWidth / 2 + 0.4), hallHeight / 2 - 1.1, -2.4);
+      sideWall.rotation.y = direction * (-Math.PI / 2);
+      this.scene.add(sideWall);
+    }
+
+    const techStripColors = ["#00e8ff", "#4da6ff", "#00f5d4", "#7b8cff", "#00e8ff"];
+    for (let index = 0; index < techStripColors.length; index += 1) {
+      const stripWidth = hallWidth - 1.2 - index * 0.35;
+      this.addTechLightStrip(
+        stripWidth,
+        techStripColors[index],
+        new THREE.Vector3(0, 2.15 + index * 0.42, hallBackZ + 0.08),
+      );
+    }
+
+    for (const direction of [-1, 1] as const) {
+      this.addTechLightStrip(
+        0.045,
+        direction === -1 ? "#00e8ff" : "#7b8cff",
+        new THREE.Vector3(direction * (hallWidth / 2 - 0.55), 3.35, hallBackZ + 0.1),
+        0,
+        4.8,
+        0.014,
+      );
+    }
+
+    const sign = this.createTechHudDecal("欢乐世界", "#00e8ff", 4.6);
+    sign.position.set(0, 5.05, hallBackZ + 0.12);
+    this.scene.add(sign);
+
+    const subSign = this.createTechHudDecal("COIN ARCADE", "#7b8cff", 3.2);
+    subSign.position.set(0, 4.05, hallBackZ + 0.1);
+    this.scene.add(subSign);
+
+    const panelColors = ["#00e8ff", "#4da6ff", "#00f5d4"];
+    for (let index = 0; index < panelColors.length; index += 1) {
+      const panel = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.35, 1.85),
+        new THREE.MeshStandardMaterial({
+          color: "#121820",
+          emissive: panelColors[index],
+          emissiveMap: this.createTechPanelTexture(panelColors[index]),
+          emissiveIntensity: 0.95,
+          metalness: 0.62,
+          roughness: 0.28,
+        }),
+      );
+      const offset = (index - 1) * 2.15;
+      panel.position.set(offset, 2.65, hallBackZ + 0.1);
+      this.scene.add(panel);
+
+      this.addTechLightStrip(1.22, panelColors[index], new THREE.Vector3(offset, 3.62, hallBackZ + 0.11), 0, 0.035, 0.01);
+      this.addTechLightStrip(1.22, panelColors[index], new THREE.Vector3(offset, 1.68, hallBackZ + 0.11), 0, 0.035, 0.01);
+    }
+
+    const ledColors = ["#00e8ff", "#4da6ff", "#00f5d4", "#7b8cff", "#00e8ff", "#4da6ff"];
+    for (let index = 0; index < ledColors.length; index += 1) {
+      const t = index / (ledColors.length - 1);
+      const x = -hallWidth / 2 + 0.8 + t * (hallWidth - 1.6);
+      const housing = new THREE.Mesh(
+        new THREE.BoxGeometry(0.34, 0.06, 0.12),
+        new THREE.MeshStandardMaterial({
+          color: "#101620",
+          emissive: "#060a10",
+          metalness: 0.78,
+          roughness: 0.32,
+        }),
+      );
+      housing.position.set(x, hallHeight - 0.38, 0.2);
+      this.scene.add(housing);
+
+      const led = new THREE.Mesh(
+        new THREE.BoxGeometry(0.24, 0.018, 0.04),
+        new THREE.MeshStandardMaterial({
+          color: ledColors[index],
+          emissive: ledColors[index],
+          emissiveIntensity: 1.65,
+          metalness: 0.42,
+          roughness: 0.18,
+        }),
+      );
+      led.position.set(x, hallHeight - 0.36, 0.24);
+      this.scene.add(led);
+    }
+
+    for (const direction of [-1, 1] as const) {
+      const cabinet = new THREE.Mesh(
+        new THREE.BoxGeometry(1.1, 2.4, 0.72),
+        new THREE.MeshStandardMaterial({
+          color: "#241830",
+          emissive: direction === -1 ? "#ff4d8a" : "#6ee8ff",
+          emissiveIntensity: 0.28,
+          metalness: 0.34,
+          roughness: 0.62,
+        }),
+      );
+      cabinet.position.set(direction * (hallWidth / 2 - 0.55), 0.15, hallBackZ + 1.8);
+      this.scene.add(cabinet);
+
+      const marquee = new THREE.Mesh(
+        new THREE.BoxGeometry(0.92, 0.04, 0.04),
+        new THREE.MeshStandardMaterial({
+          color: direction === -1 ? "#00e8ff" : "#7b8cff",
+          emissive: direction === -1 ? "#00e8ff" : "#7b8cff",
+          emissiveMap: this.createTechStripTexture(direction === -1 ? "#00e8ff" : "#7b8cff", 0.92),
+          emissiveIntensity: 1.45,
+          metalness: 0.52,
+          roughness: 0.22,
+        }),
+      );
+      marquee.position.set(direction * (hallWidth / 2 - 0.55), 1.55, hallBackZ + 2.18);
+      this.scene.add(marquee);
+    }
+
+    this.addTechLightStrip(
+      hallWidth - 2.4,
+      "#00e8ff",
+      new THREE.Vector3(0, hallHeight - 0.95, 1.8),
+      -0.12,
+      0.05,
+      0.012,
+    );
+  }
+
+  private addTechLightStrip(
+    width: number,
+    color: string,
+    position: THREE.Vector3,
+    rotationX = 0,
+    height = 0.05,
+    depth = 0.08,
+  ): void {
+    const track = new THREE.Mesh(
+      new THREE.BoxGeometry(width + 0.08, height + 0.03, depth + 0.03),
+      new THREE.MeshStandardMaterial({
+        color: "#0c1018",
+        emissive: "#04060a",
+        metalness: 0.82,
+        roughness: 0.28,
+      }),
+    );
+    track.position.copy(position);
+    track.rotation.x = rotationX;
+    this.scene.add(track);
+
+    const strip = new THREE.Mesh(
+      new THREE.BoxGeometry(width, height, depth),
+      new THREE.MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveMap: this.createTechStripTexture(color, width),
+        emissiveIntensity: 1.55,
+        metalness: 0.46,
+        roughness: 0.18,
+      }),
+    );
+    strip.position.copy(position);
+    strip.position.z += 0.015;
+    strip.rotation.x = rotationX;
+    this.scene.add(strip);
+
+    for (const direction of [-1, 1] as const) {
+      const cap = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, height + 0.02, depth + 0.02),
+        new THREE.MeshStandardMaterial({
+          color: "#182028",
+          emissive: color,
+          emissiveIntensity: 0.35,
+          metalness: 0.74,
+          roughness: 0.24,
+        }),
+      );
+      cap.position.copy(position);
+      cap.position.x += direction * (width / 2 + 0.02);
+      cap.position.z += 0.012;
+      cap.rotation.x = rotationX;
+      this.scene.add(cap);
+    }
+  }
+
+  private createTechStripTexture(color: string, stripWidth = 8): THREE.CanvasTexture {
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 32;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#06080c";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const segmentCount = 28;
+      const gap = 6;
+      const segmentWidth = (canvas.width - gap * (segmentCount + 1)) / segmentCount;
+      for (let index = 0; index < segmentCount; index += 1) {
+        const x = gap + index * (segmentWidth + gap);
+        const gradient = ctx.createLinearGradient(x, 0, x, canvas.height);
+        gradient.addColorStop(0, color);
+        gradient.addColorStop(0.45, "#ffffff");
+        gradient.addColorStop(1, color);
+        ctx.fillStyle = gradient;
+        ctx.fillRect(x, 4, segmentWidth, canvas.height - 8);
+
+        if (index % 4 === 0) {
+          ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+          ctx.fillRect(x + segmentWidth * 0.38, 1, segmentWidth * 0.24, 2);
+        }
+      }
+
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.repeat.set(Math.max(2, Math.round(stripWidth / 1.8)), 1);
+    return texture;
+  }
+
+  private createTechPanelTexture(color: string): THREE.CanvasTexture {
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 360;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#0a1018";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= canvas.width; x += 16) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= canvas.height; y += 16) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(18, 18, canvas.width - 36, canvas.height - 36);
+
+      ctx.globalAlpha = 0.28;
+      for (let index = 0; index < 5; index += 1) {
+        const y = 48 + index * 56;
+        ctx.fillStyle = color;
+        ctx.fillRect(34, y, canvas.width - 68, 10);
+        ctx.fillStyle = "rgba(255,255,255,0.35)";
+        ctx.fillRect(34, y, (canvas.width - 68) * (0.35 + index * 0.12), 3);
+      }
+
+      ctx.globalAlpha = 0.18;
+      ctx.beginPath();
+      ctx.arc(canvas.width - 42, 42, 18, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }
+
+  private createTechHudDecal(text: string, color: string, width: number): THREE.Mesh {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 256;
+    const ctx = canvas.getContext("2d");
+    const height = width * (canvas.height / canvas.width);
+    if (!ctx) {
+      return new THREE.Mesh(new THREE.PlaneGeometry(width, height));
+    }
+
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = '800 96px "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif';
+
+    ctx.save();
+    ctx.globalAlpha = 0.28;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 36;
+    ctx.fillText(text, centerX, centerY);
+    ctx.restore();
+
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(72, 56, canvas.width - 144, canvas.height - 112);
+
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.95;
+    ctx.fillText(text, centerX, centerY);
+
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.globalAlpha = 0.55;
+    ctx.fillText(text, centerX, centerY - 1);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
+
+    return new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height),
+      new THREE.MeshStandardMaterial({
+        map: texture,
+        transparent: true,
+        emissive: color,
+        emissiveIntensity: 0.72,
+        roughness: 0.28,
+        metalness: 0.42,
+        depthWrite: false,
+      }),
+    );
+  }
+
+  private createHallFloorTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#2a2038";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const tile = 64;
+      for (let y = 0; y < canvas.height; y += tile) {
+        for (let x = 0; x < canvas.width; x += tile) {
+          const even = ((x / tile) + (y / tile)) % 2 === 0;
+          ctx.fillStyle = even ? "#342840" : "#2e2436";
+          ctx.fillRect(x + 1, y + 1, tile - 2, tile - 2);
+        }
+      }
+
+      ctx.strokeStyle = "rgba(255, 140, 200, 0.12)";
+      ctx.lineWidth = 2;
+      for (let x = 0; x <= canvas.width; x += tile) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= canvas.height; y += tile) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(4, 4);
+    return texture;
+  }
+
+  private createNeonDecal(text: string, color: string, width: number): THREE.Mesh {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 256;
+    const ctx = canvas.getContext("2d");
+    const height = width * (canvas.height / canvas.width);
+    if (!ctx) {
+      return new THREE.Mesh(new THREE.PlaneGeometry(width, height));
+    }
+
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = '900 108px "Microsoft YaHei", "PingFang SC", "Noto Sans SC", "Segoe UI", sans-serif';
+
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 48;
+    ctx.fillText(text, centerX, centerY);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = 0.72;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 18;
+    ctx.fillText(text, centerX, centerY);
+    ctx.restore();
+
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#fff6fb";
+    ctx.fillText(text, centerX, centerY);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
+
+    return new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height),
+      new THREE.MeshStandardMaterial({
+        map: texture,
+        transparent: true,
+        emissive: color,
+        emissiveIntensity: 0.85,
+        roughness: 0.35,
+        metalness: 0.08,
+        depthWrite: false,
+      }),
+    );
   }
 
   private createDecor(): void {
-    const backPanel = new THREE.Mesh(
-      new THREE.PlaneGeometry(TABLE.width + 0.6, 3.4),
-      new THREE.MeshStandardMaterial({
-        color: "#29445a",
-        emissive: "#173049",
-        metalness: 0.2,
-        roughness: 0.82,
-      }),
-    );
-    backPanel.position.set(0, 1.9, this.floorBackZ - 0.46);
-    this.scene.add(backPanel);
+    this.createAmusementParkBackdrop();
 
     const glassMaterial = new THREE.MeshPhysicalMaterial({
       color: "#b7efff",
@@ -1670,6 +2788,7 @@ export class CoinPusherApp {
       }
 
       this.updatePusher(delta);
+      this.updatePusherBackWallDecor(delta);
       this.applyPusherAssist();
       this.stepPhysics(delta);
       this.syncMeshes();
