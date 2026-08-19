@@ -130,6 +130,14 @@ export class CoinPusherApp {
 
   private pusherMesh!: THREE.Group;
   private pusherBody!: PhysicsBody;
+  private coinChuteGroup: THREE.Group | null = null;
+  private coinChuteCarriage: THREE.Group | null = null;
+  private coinChuteTime = 0;
+  private coinChuteX = 0;
+  private coinChuteMinX = -2.4;
+  private coinChuteMaxX = 2.4;
+  private readonly coinChuteMouthLocal = new THREE.Vector3(0, -0.76, 0.68);
+  private readonly coinChuteMouthWorld = new THREE.Vector3();
   private readonly pusherLedStrips: Array<{
     segments: THREE.MeshStandardMaterial[];
     speed: number;
@@ -739,6 +747,13 @@ export class CoinPusherApp {
       holeCenterY,
       apertureZ + faceThickness / 2 + 0.008,
     );
+    this.createCoinChuteSlider(
+      wallWidth,
+      holeWidth,
+      holeHeight,
+      holeCenterY,
+      apertureZ + faceThickness / 2 + 0.02,
+    );
 
     const accentBar = new THREE.Mesh(
       new THREE.BoxGeometry(wallWidth - 0.7, 0.07, 0.04),
@@ -1005,6 +1020,217 @@ export class CoinPusherApp {
       12,
       0.2,
     );
+  }
+
+  private createCoinChuteSlider(
+    wallWidth: number,
+    holeWidth: number,
+    holeHeight: number,
+    holeCenterY: number,
+    faceZ: number,
+  ): void {
+    const panelHeight = 1.55;
+    const panelY = holeCenterY + holeHeight / 2 + 1.05;
+    const railY = panelY + panelHeight / 2 + 0.14;
+    const railWidth = Math.min(wallWidth - 0.9, holeWidth + 0.35);
+    this.coinChuteMinX = -railWidth / 2 + 0.48;
+    this.coinChuteMaxX = railWidth / 2 - 0.48;
+    this.coinChuteX = 0;
+
+    const group = new THREE.Group();
+    group.position.set(0, 0, faceZ);
+    this.scene.add(group);
+    this.coinChuteGroup = group;
+
+    const railMaterial = new THREE.MeshStandardMaterial({
+      color: "#c5d4de",
+      emissive: "#3a4e5c",
+      metalness: 0.86,
+      roughness: 0.22,
+    });
+    const darkMaterial = new THREE.MeshStandardMaterial({
+      color: "#1a2430",
+      emissive: "#0b1218",
+      metalness: 0.55,
+      roughness: 0.4,
+    });
+    const glowMaterial = new THREE.MeshStandardMaterial({
+      color: "#57e8ff",
+      emissive: "#57e8ff",
+      emissiveIntensity: 1.35,
+      metalness: 0.3,
+      roughness: 0.25,
+    });
+
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(railWidth, 0.08, 0.1), railMaterial);
+    rail.position.set(0, railY, 0.02);
+    rail.castShadow = true;
+    group.add(rail);
+
+    const railGroove = new THREE.Mesh(new THREE.BoxGeometry(railWidth - 0.12, 0.03, 0.04), darkMaterial);
+    railGroove.position.set(0, railY, 0.07);
+    group.add(railGroove);
+
+    for (const direction of [-1, 1] as const) {
+      const stop = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.14), railMaterial);
+      stop.position.set(direction * (railWidth / 2), railY, 0.03);
+      group.add(stop);
+    }
+
+    const carriage = new THREE.Group();
+    carriage.position.set(0, railY, 0.08);
+    group.add(carriage);
+    this.coinChuteCarriage = carriage;
+
+    const sliderBlock = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.36, 0.36), darkMaterial);
+    sliderBlock.position.set(0, 0.04, 0.08);
+    sliderBlock.castShadow = true;
+    carriage.add(sliderBlock);
+
+    const sliderCap = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.08, 0.4), glowMaterial);
+    sliderCap.position.set(0, 0.24, 0.08);
+    carriage.add(sliderCap);
+
+    const chuteMetal = new THREE.MeshStandardMaterial({
+      color: "#d8e2ea",
+      emissive: "#3a4c5a",
+      metalness: 0.88,
+      roughness: 0.2,
+    });
+    const chuteAccent = new THREE.MeshStandardMaterial({
+      color: "#ffd166",
+      emissive: "#a66a10",
+      emissiveIntensity: 0.75,
+      metalness: 0.72,
+      roughness: 0.26,
+    });
+    const chuteInner = new THREE.MeshStandardMaterial({
+      color: "#9eb4c4",
+      emissive: "#5a7a90",
+      emissiveIntensity: 0.55,
+      metalness: 0.7,
+      roughness: 0.28,
+    });
+    const chuteFloor = new THREE.MeshStandardMaterial({
+      color: "#c9d8e4",
+      emissive: "#6a8aa0",
+      emissiveIntensity: 0.7,
+      metalness: 0.82,
+      roughness: 0.18,
+    });
+
+    // Vertical square duct from the slider down to the spout.
+    const duct = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.78, 0.34), chuteMetal);
+    duct.position.set(0, -0.42, 0.2);
+    duct.castShadow = true;
+    carriage.add(duct);
+
+    const ductFront = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.7, 0.02), darkMaterial);
+    ductFront.position.set(0, -0.42, 0.38);
+    carriage.add(ductFront);
+
+    // Open spout: metal floor + walls + hood, no black void plane.
+    const spout = new THREE.Group();
+    spout.position.set(0, -0.92, 0.28);
+    spout.rotation.x = -0.55;
+    carriage.add(spout);
+
+    const floorPlate = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.04, 0.58), chuteFloor);
+    floorPlate.position.set(0, -0.14, 0.18);
+    floorPlate.receiveShadow = true;
+    spout.add(floorPlate);
+
+    const floorRib = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.02, 0.5), chuteAccent);
+    floorRib.position.set(0, -0.11, 0.2);
+    spout.add(floorRib);
+
+    for (const direction of [-1, 1] as const) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.3, 0.58), chuteInner);
+      wall.position.set(direction * 0.26, 0.0, 0.16);
+      wall.castShadow = true;
+      spout.add(wall);
+    }
+
+    const backWall = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.3, 0.05), chuteInner);
+    backWall.position.set(0, 0.0, -0.12);
+    spout.add(backWall);
+
+    const hood = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.05, 0.5), chuteMetal);
+    hood.position.set(0, 0.18, 0.14);
+    hood.castShadow = true;
+    spout.add(hood);
+
+    // Gold exit frame around the open mouth.
+    const frameTop = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.045, 0.05), chuteAccent);
+    frameTop.position.set(0, 0.16, 0.4);
+    spout.add(frameTop);
+    const frameBottom = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.045, 0.05), chuteAccent);
+    frameBottom.position.set(0, -0.16, 0.44);
+    spout.add(frameBottom);
+    for (const direction of [-1, 1] as const) {
+      const frameSide = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.32, 0.05), chuteAccent);
+      frameSide.position.set(direction * 0.27, 0.0, 0.42);
+      spout.add(frameSide);
+    }
+
+    // Exit lip / tray extending forward.
+    const lip = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.035, 0.2), chuteAccent);
+    lip.position.set(0, -0.18, 0.52);
+    spout.add(lip);
+
+    const cheekLeft = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.08, 0.16), chuteMetal);
+    cheekLeft.position.set(-0.25, -0.14, 0.5);
+    spout.add(cheekLeft);
+    const cheekRight = cheekLeft.clone();
+    cheekRight.position.x = 0.25;
+    spout.add(cheekRight);
+
+    const mouthMarker = new THREE.Object3D();
+    mouthMarker.position.copy(this.coinChuteMouthLocal);
+    carriage.add(mouthMarker);
+
+    const chuteLight = new THREE.PointLight("#b8e8ff", 12, 2.8, 2);
+    chuteLight.position.set(0, -0.55, 0.45);
+    carriage.add(chuteLight);
+
+    // Warm light from inside the spout so the metal floor reads clearly.
+    const mouthGlow = new THREE.PointLight("#ffe0a0", 11, 1.4, 1.8);
+    mouthGlow.position.set(0, -0.95, 0.55);
+    carriage.add(mouthGlow);
+
+    this.updateCoinChute(0);
+  }
+
+  private updateCoinChute(deltaSeconds: number): void {
+    if (!this.coinChuteCarriage) {
+      return;
+    }
+
+    this.coinChuteTime += deltaSeconds;
+    // Triangle shuttle: nearly constant speed, quick turnaround at the ends.
+    const roundTripSeconds = 3.4;
+    const phase = (this.coinChuteTime / roundTripSeconds) % 1;
+    const tri = phase < 0.5 ? phase * 2 : 2 - phase * 2;
+    this.coinChuteX = THREE.MathUtils.lerp(this.coinChuteMinX, this.coinChuteMaxX, tri);
+    this.coinChuteCarriage.position.x = this.coinChuteX;
+    this.coinChuteCarriage.updateMatrixWorld(true);
+    const mouthPoint = this.coinChuteMouthLocal.clone();
+    this.coinChuteCarriage.localToWorld(mouthPoint);
+    this.coinChuteMouthWorld.copy(mouthPoint);
+  }
+
+  private getCoinChuteDropPose(): { x: number; y: number; z: number } {
+    if (!this.coinChuteCarriage) {
+      return {
+        x: 0,
+        y: this.getPusherSurfaceY() + 1.1,
+        z: this.pusherApertureZ + 0.55,
+      };
+    }
+    this.coinChuteCarriage.updateMatrixWorld(true);
+    const mouthPoint = this.coinChuteMouthLocal.clone();
+    this.coinChuteCarriage.localToWorld(mouthPoint);
+    return { x: mouthPoint.x, y: mouthPoint.y, z: mouthPoint.z };
   }
 
   private addLedTechFrame(
@@ -2724,8 +2950,28 @@ export class CoinPusherApp {
     this.incrementTaskMetric("drops", 1);
     const itemType = forceType ?? this.rollItemType();
     this.spawnItem(itemType);
+    this.flashCoinChuteMouth();
     this.renderState();
     return true;
+  }
+
+  private flashCoinChuteMouth(): void {
+    if (!this.coinChuteCarriage) {
+      return;
+    }
+    const light = this.coinChuteCarriage.children.find(
+      (child) => child instanceof THREE.PointLight,
+    ) as THREE.PointLight | undefined;
+    if (!light) {
+      return;
+    }
+    const previous = light.intensity;
+    light.intensity = previous + 16;
+    this.scheduleAction(120, () => {
+      if (light.parent) {
+        light.intensity = previous;
+      }
+    });
   }
 
   private rollItemType(): DropItemType {
@@ -2749,18 +2995,24 @@ export class CoinPusherApp {
       velocityZ?: number;
       randomSpin?: boolean;
       rotationX?: number;
+      fromChute?: boolean;
     },
   ): void {
     if (!this.physicsReady && !this.physics.isReady()) {
       return;
     }
-    const spawnX = x ?? THREE.MathUtils.randFloat(-(this.playfieldWidth / 2) + 0.7, this.playfieldWidth / 2 - 0.7);
-    const spawnCenterZ = this.pusherBody ? this.pusherBody.position.z : this.pusherStartZ;
-    const pusherBackZ = spawnCenterZ - this.pusherDepth / 2;
-    const spawnRangeBack = Math.max(this.floorBackZ + 0.48, pusherBackZ + 0.34);
-    const spawnRangeFront = Math.min(this.floorBackZ + 1.18, pusherBackZ + 0.92);
-    const spawnZ = z ?? THREE.MathUtils.randFloat(spawnRangeBack, Math.max(spawnRangeBack + 0.12, spawnRangeFront));
-    const spawnY = options?.spawnY ?? this.getPusherSurfaceY(spawnZ) + 1.18;
+
+    const useChute = options?.fromChute === true || (x === undefined && z === undefined);
+    const chutePose = useChute ? this.getCoinChuteDropPose() : null;
+    const spawnX = x ?? chutePose?.x ?? 0;
+    const spawnZ =
+      z ??
+      chutePose?.z ??
+      THREE.MathUtils.randFloat(this.floorBackZ + 0.48, this.floorBackZ + 1.18);
+    const spawnY =
+      options?.spawnY ??
+      chutePose?.y ??
+      this.getPusherSurfaceY(spawnZ) + 1.18;
     const rotationX = options?.rotationX ?? 0;
 
     let mesh: THREE.Object3D;
@@ -2790,9 +3042,10 @@ export class CoinPusherApp {
     this.scene.add(mesh);
 
     const velocity = vec3(
-      options?.velocityX ?? THREE.MathUtils.randFloat(-0.03, 0.03),
-      THREE.MathUtils.randFloat(-0.08, 0.01),
-      options?.velocityZ ?? THREE.MathUtils.randFloat(0.04, 0.14),
+      options?.velocityX ?? (useChute ? THREE.MathUtils.randFloat(-0.08, 0.08) : THREE.MathUtils.randFloat(-0.03, 0.03)),
+      useChute ? THREE.MathUtils.randFloat(-0.35, -0.12) : THREE.MathUtils.randFloat(-0.08, 0.01),
+      options?.velocityZ ??
+        (useChute ? THREE.MathUtils.randFloat(0.55, 0.95) : THREE.MathUtils.randFloat(0.04, 0.14)),
     );
     let angularVelocity = vec3(0, 0, 0);
     if (options?.randomSpin !== false) {
@@ -2924,6 +3177,7 @@ export class CoinPusherApp {
       }
 
       this.updatePusher(delta);
+      this.updateCoinChute(delta);
       this.updatePusherBackWallDecor(delta);
       this.applyPusherAssist();
       this.stepPhysics(delta);
