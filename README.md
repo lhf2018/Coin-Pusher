@@ -23,6 +23,7 @@
 - 左右侧沿用与台面相切的 90° 圆弧滑出
 - 金币、钻石、碎片、任务、Bonus、Fever
 - 开发调试面板和快捷键
+- 台面中央圆形升降口与金币塔演出（`T` 或右侧按钮）
 - 本地截图自测流程
 
 当前仍然属于原型：
@@ -83,6 +84,7 @@ pnpm preview
 
 - 点击右侧 `投币`
 - 或按键盘 `Space`
+- 点击 `升起金币塔` 或按 `T`，从台面圆孔升起一塔金币
 - 点击 `自动投币` 可开关自动投放
 - 右侧可以升级金币收益、推盘速度、自动投币
 
@@ -209,6 +211,9 @@ coin-pusher-local-framework-doc.md
 
 部分截图保存在：
 
+- [artifacts/review-shot-coin-tower-hatch.png](artifacts/review-shot-coin-tower-hatch.png) — 圆形升降口闭合（虚线标记）
+- [artifacts/review-shot-coin-tower-risen.png](artifacts/review-shot-coin-tower-risen.png) — 金币塔升起完成
+- [artifacts/review-shot-coin-tower-closeup.png](artifacts/review-shot-coin-tower-closeup.png) — 金币塔近景
 - [artifacts/review-shot-polished.png](artifacts/review-shot-polished.png)
 - [artifacts/review-shot-fast-loop-tilt.png](artifacts/review-shot-fast-loop-tilt.png)
 - [artifacts/review-shot-fast-loop-assist.png](artifacts/review-shot-fast-loop-assist.png)

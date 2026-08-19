@@ -3,6 +3,31 @@
 本地规划稿，面向当前 Vite 原型（`src/`）。不接账号、存档、后端。  
 机台结构以 [prototype-dev-notes.md](prototype-dev-notes.md) 为准，不要为了换皮把开口坑、圆弧滑道改回去。
 
+## 已实现增量（金币塔升降口）
+
+2026-08 原型已加入 **台面圆形升降口 + 金币塔** 演出，作为后续模式/Bonus 的可复用机制（不是最终美术）。
+
+| 项 | 实现 | 说明 |
+| --- | --- | --- |
+| 圆形升降口 | 台面 Extrude 真圆孔 + 半圆盖板 | 不是「方孔套圆」，盖板与台面齐平 |
+| 标记 | 贴地虚线圆环 | 纯图案，无凸起边框 |
+| 金币塔 | 8 层 ×（1 中心 + 6 环） | 层间错 30°，升起后锚定防坍塌 |
+| 操作 | 右侧「升起金币塔」/ 快捷键 `T` | 开盖 → 升起 → 关盖 → 稳定 → 推盘可推 |
+
+截图（本地自测）：
+
+| 闭合态（虚线标记） | 升起完成 |
+| --- | --- |
+| ![台面圆形升降口闭合](artifacts/review-shot-coin-tower-hatch.png) | ![金币塔升起](artifacts/review-shot-coin-tower-risen.png) |
+
+近景参考：[review-shot-coin-tower-closeup.png](artifacts/review-shot-coin-tower-closeup.png)
+
+代码入口：`CoinPusherApp.createPlayfieldFloorWithCenterHole`、`requestCoinTower`、`spawnCoinTower`。
+
+换皮时注意：**虚线颜色、盖板材质、井壁色** 应随 `MachineTheme` 走，不要把圆孔改回方孔或加凸起描边。
+
+---
+
 ## 现状
 
 现在能玩，但看起来仍是「可演示占位」：
@@ -15,12 +40,14 @@
 | 花纹 | 几乎没有 | 台面、侧墙、后板都是素色盒子 |
 | 背景 | 纯色雾 `#204762` | 没有厅堂、灯箱、景深 |
 | 模式 | 只有一种无尽推币 + Bonus 轮换 | 调试预设不是玩法模式 |
+| 台面机制 | 中央圆形升降口 + 金币塔演出 | 机制已有，视觉仍偏占位，待主题化 |
 
 代码入口：
 
 - 金币 / 宝箱 / 稀有物网格：`CoinPusherApp.createCoinMesh` 等
 - 台面、灯光、背景：`createTable`、`configureScene`
 - Bonus 轮换：`coinRain` / `fever` / `chestDrop`
+- 金币塔升降：`requestCoinTower`、`createPlayfieldFloorWithCenterHole`
 
 ## 目标
 
@@ -164,6 +191,7 @@
 | 期 | 内容 | 说明 |
 | --- | --- | --- |
 | P0 | 金币贴图 + 默认街机主题（颜色 / 灯光 / 简易台面纹 / 背景 A 档） | 先让「默认画面」不再像占位 |
+| P0+ | 金币塔升降口主题化（虚线、盖板、井壁随 MachineTheme） | 机制已完成，见上文截图 |
 | P1 | MachineTheme 配置化，至少 2 套皮肤 | 为模式换皮做准备 |
 | P2 | 模式选择 + 经典 / 限时 | 玩法开始分叉 |
 | P3 | 高价值狩猎、狂欢模式 + 宝箱/稀有物外观 | 槽位和奖励物对齐 |
