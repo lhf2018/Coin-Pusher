@@ -82,15 +82,20 @@ export class CoinPusherApp {
   private readonly floorCenterZ = (this.floorBackZ + this.floorFrontZ) / 2;
   /**
    * Side layout (no orphan strip):
-   * walls cover [back → exit line], narrow ramp opening covers [exit line → front].
+   * walls cover [back → exit line], side exit tunnels cover [exit line → front].
    */
   private readonly sideRampOpeningWidth = 1.65;
   private readonly sideRampEndZ = this.floorFrontZ + 0.02;
   private readonly sideExitLineZ = this.sideRampEndZ - this.sideRampOpeningWidth;
   private readonly sideWallFrontZ = this.sideExitLineZ;
-  private readonly sideRampRadius = 1.42;
-  private readonly sideRampArc = Math.PI / 2;
+  /** Horizontal outward length of each side-exit ramp. */
+  private readonly sideRampRun = 1.42;
+  /** Vertical drop of each side-exit ramp. */
+  private readonly sideRampDrop = 1.05;
   private readonly sideWallThickness = 0.34;
+  private readonly sideWallHeight = 1.28;
+  /** Side-wall mesh center Y offset above the floor surface. */
+  private readonly sideWallCenterOffsetY = 0.52;
   private readonly collectionCenterZ = 5.1;
   private readonly collectionDepth = 1.5;
   private readonly slotSplitX = 1.55;
@@ -329,10 +334,19 @@ export class CoinPusherApp {
     key.target.position.set(0, 0.42, 1.55);
     this.scene.add(key, key.target);
 
-    const sideKey = new THREE.SpotLight("#ffc8e8", 58, 28, 0.5, 0.7, 2);
-    sideKey.position.set(5.8, 5.6, 4.6);
-    sideKey.target.position.set(0, 0.34, 1.95);
+    const sideKey = new THREE.SpotLight("#ffc8e8", 78, 30, 0.55, 0.65, 1.8);
+    sideKey.position.set(6.2, 5.8, 5.2);
+    sideKey.target.position.set(3.2, 0.2, this.sideExitLineZ + 0.4);
+    sideKey.castShadow = true;
+    sideKey.shadow.mapSize.set(1024, 1024);
     this.scene.add(sideKey, sideKey.target);
+
+    const sideKeyLeft = new THREE.SpotLight("#c8f0ff", 78, 30, 0.55, 0.65, 1.8);
+    sideKeyLeft.position.set(-6.2, 5.8, 5.2);
+    sideKeyLeft.target.position.set(-3.2, 0.2, this.sideExitLineZ + 0.4);
+    sideKeyLeft.castShadow = true;
+    sideKeyLeft.shadow.mapSize.set(1024, 1024);
+    this.scene.add(sideKeyLeft, sideKeyLeft.target);
 
     const rim = new THREE.PointLight("#ff6ec7", 18, 22, 2);
     rim.position.set(-4.6, 3.2, -0.3);
@@ -484,26 +498,30 @@ export class CoinPusherApp {
     for (const direction of [-1, 1] as const) {
       const sideWallCenterX = direction * (sideWallInnerX + this.sideWallThickness / 2);
       const sideWall = new THREE.Mesh(
-        new THREE.BoxGeometry(this.sideWallThickness, 1.28, sideWallDepth),
+        new THREE.BoxGeometry(this.sideWallThickness, this.sideWallHeight, sideWallDepth),
         railMaterial,
       );
-      sideWall.position.set(sideWallCenterX, sideWallBaseY + 0.52, sideWallCenterZ);
+      sideWall.position.set(
+        sideWallCenterX,
+        sideWallBaseY + this.sideWallCenterOffsetY,
+        sideWallCenterZ,
+      );
       sideWall.castShadow = true;
       sideWall.receiveShadow = true;
       this.scene.add(sideWall);
 
       this.addStaticBody(
-        vec3(this.sideWallThickness / 2, 0.64, sideWallDepth / 2),
-        vec3(sideWallCenterX, sideWallBaseY + 0.52, sideWallCenterZ),
+        vec3(this.sideWallThickness / 2, this.sideWallHeight / 2, sideWallDepth / 2),
+        vec3(sideWallCenterX, sideWallBaseY + this.sideWallCenterOffsetY, sideWallCenterZ),
       );
 
       const sideTrim = new THREE.Mesh(
-        new THREE.BoxGeometry(0.06, 1.18, sideWallDepth),
+        new THREE.BoxGeometry(0.06, this.sideWallHeight - 0.1, sideWallDepth),
         sideTrimMaterial,
       );
       sideTrim.position.set(
         direction * (sideWallInnerX + 0.01),
-        sideWallBaseY + 0.5,
+        sideWallBaseY + this.sideWallCenterOffsetY - 0.02,
         sideWallCenterZ,
       );
       sideTrim.castShadow = true;
@@ -511,7 +529,7 @@ export class CoinPusherApp {
       this.scene.add(sideTrim);
     }
 
-    this.createSideExitRamps(floorMaterial);
+    this.createSideExitRamps(floorMaterial, railMaterial);
 
     const backWall = new THREE.Mesh(
       new THREE.BoxGeometry(this.playfieldWidth + 0.55, 3.8, 0.28),
@@ -2200,100 +2218,218 @@ export class CoinPusherApp {
     this.scene.add(paint);
   }
 
-  private createSideExitRamps(floorMaterial: THREE.Material): void {
+  private createSideExitRamps(
+    _floorMaterial: THREE.Material,
+    _wallMaterial: THREE.Material,
+  ): void {
     const floorSurfaceY = this.getFloorSurfaceY();
     const thickness = this.floorThickness;
-    const radius = this.sideRampRadius;
-    const endAngle = this.sideRampArc;
+    const halfThickness = thickness / 2;
     const joinX = this.playfieldWidth / 2;
+    const run = this.sideRampRun;
+    const drop = this.sideRampDrop;
     const rampDepth = this.sideRampEndZ - this.sideExitLineZ;
     const zStart = this.sideExitLineZ;
-    const geometry = this.createCurvedRampGeometry(radius, thickness, endAngle, rampDepth);
+    const zCenter = (this.sideExitLineZ + this.sideRampEndZ) / 2;
+    const slopeLength = Math.hypot(run, drop);
+    const angle = Math.atan2(drop, run);
+    const wallTopY = floorSurfaceY + this.sideWallCenterOffsetY + this.sideWallHeight / 2;
+    const coverThickness = 0.1;
+    const cheekThickness = 0.1;
+    const tunnelClearBottom = floorSurfaceY - drop - 0.08;
+    const tunnelInnerHeight = wallTopY - tunnelClearBottom;
+
+    const rampMaterial = new THREE.MeshPhysicalMaterial({
+      color: "#3d6f8c",
+      emissive: "#1a4058",
+      emissiveIntensity: 0.35,
+      metalness: 0.72,
+      roughness: 0.22,
+      clearcoat: 0.4,
+      clearcoatRoughness: 0.18,
+    });
+    const tunnelShellMaterial = new THREE.MeshStandardMaterial({
+      color: "#152838",
+      emissive: "#0a1824",
+      emissiveIntensity: 0.45,
+      metalness: 0.48,
+      roughness: 0.55,
+    });
+    const tunnelInnerMaterial = new THREE.MeshStandardMaterial({
+      color: "#1a3044",
+      emissive: "#123048",
+      emissiveIntensity: 0.55,
+      metalness: 0.28,
+      roughness: 0.62,
+    });
+    const accentStripMaterial = new THREE.MeshStandardMaterial({
+      color: "#57e8ff",
+      emissive: "#57e8ff",
+      emissiveIntensity: 1.45,
+      metalness: 0.35,
+      roughness: 0.22,
+    });
+    const warmStripMaterial = new THREE.MeshStandardMaterial({
+      color: "#ffd166",
+      emissive: "#ffb347",
+      emissiveIntensity: 1.25,
+      metalness: 0.28,
+      roughness: 0.28,
+    });
 
     for (const direction of [-1, 1] as const) {
-      const rampGeometry = direction === 1 ? geometry : geometry.clone();
-      if (direction === -1) {
-        this.mirrorGeometryX(rampGeometry);
-      }
-      const ramp = new THREE.Mesh(rampGeometry, floorMaterial);
-      ramp.position.set(direction * joinX, floorSurfaceY, zStart);
+      const topCenterX = direction * (joinX + run / 2);
+      const topCenterY = floorSurfaceY - drop / 2;
+      const normalX = -direction * Math.sin(angle);
+      const normalY = Math.cos(angle);
+      const rampCenterX = topCenterX - normalX * halfThickness;
+      const rampCenterY = topCenterY - normalY * halfThickness;
+      const rotationZ = -direction * angle;
+      const accentColor = direction === -1 ? "#ff6ec7" : "#57e8ff";
+
+      const ramp = new THREE.Mesh(
+        new THREE.BoxGeometry(slopeLength, thickness, rampDepth),
+        rampMaterial,
+      );
+      ramp.position.set(rampCenterX, rampCenterY, zCenter);
+      ramp.rotation.z = rotationZ;
       ramp.castShadow = true;
       ramp.receiveShadow = true;
       this.scene.add(ramp);
-      this.addCurvedRampPhysics(direction, joinX, floorSurfaceY, zStart, rampDepth, radius, thickness, endAngle);
-    }
-  }
-
-  private createCurvedRampGeometry(
-    radius: number,
-    thickness: number,
-    endAngle: number,
-    depth: number,
-  ): THREE.BufferGeometry {
-    const innerRadius = Math.max(0.08, radius - thickness);
-    const centerY = -radius;
-    const start = Math.PI / 2;
-    const far = start - endAngle;
-    const shape = new THREE.Shape();
-    shape.absarc(0, centerY, innerRadius, start, far, true);
-    shape.lineTo(Math.cos(far) * radius, centerY + Math.sin(far) * radius);
-    shape.absarc(0, centerY, radius, far, start, false);
-    shape.closePath();
-
-    const geometry = new THREE.ExtrudeGeometry(shape, {
-      depth,
-      bevelEnabled: false,
-      curveSegments: 48,
-      steps: 1,
-    });
-    geometry.computeVertexNormals();
-    return geometry;
-  }
-
-  private addCurvedRampPhysics(
-    direction: -1 | 1,
-    joinX: number,
-    floorSurfaceY: number,
-    zStart: number,
-    rampDepth: number,
-    radius: number,
-    thickness: number,
-    endAngle: number,
-  ): void {
-    const zCenter = zStart + rampDepth / 2;
-    const halfDepth = rampDepth / 2;
-    const halfThickness = thickness / 2;
-    const arcSegments = 16;
-    const physicsRadius = radius - 0.012;
-    for (let index = 0; index < arcSegments; index += 1) {
-      const theta = (endAngle * (index + 0.5)) / arcSegments;
-      const span = (physicsRadius * endAngle) / arcSegments;
-      const centerX = direction * (joinX + (physicsRadius - halfThickness) * Math.sin(theta));
-      const centerY = floorSurfaceY - physicsRadius + (physicsRadius - halfThickness) * Math.cos(theta);
       this.addStaticBody(
-        vec3(span / 2 + 0.01, halfThickness, halfDepth),
-        vec3(centerX, centerY, zCenter),
+        vec3(slopeLength / 2, halfThickness, rampDepth / 2),
+        vec3(rampCenterX, rampCenterY, zCenter),
         0,
-        -direction * theta,
+        rotationZ,
       );
-    }
-  }
 
-  private mirrorGeometryX(geometry: THREE.BufferGeometry): void {
-    geometry.scale(-1, 1, 1);
-    const index = geometry.getIndex();
-    if (!index) {
-      geometry.computeVertexNormals();
-      return;
+      // Center guide stripe on the ramp so the slope reads clearly.
+      const guide = new THREE.Mesh(
+        new THREE.BoxGeometry(slopeLength * 0.96, 0.012, 0.16),
+        warmStripMaterial,
+      );
+      guide.position.set(
+        topCenterX + normalX * 0.01,
+        topCenterY + normalY * 0.01,
+        zCenter,
+      );
+      guide.rotation.z = rotationZ;
+      this.scene.add(guide);
+
+      const cover = new THREE.Mesh(
+        new THREE.BoxGeometry(run + 0.04, coverThickness, rampDepth + 0.04),
+        tunnelShellMaterial,
+      );
+      cover.position.set(topCenterX, wallTopY - coverThickness / 2, zCenter);
+      cover.castShadow = true;
+      cover.receiveShadow = true;
+      this.scene.add(cover);
+      this.addStaticBody(
+        vec3((run + 0.04) / 2, coverThickness / 2, (rampDepth + 0.04) / 2),
+        vec3(topCenterX, wallTopY - coverThickness / 2, zCenter),
+      );
+
+      // Underside light bar makes the tunnel ceiling catch highlights.
+      const ceilingBar = new THREE.Mesh(
+        new THREE.BoxGeometry(run * 0.88, 0.03, 0.08),
+        accentStripMaterial.clone(),
+      );
+      (ceilingBar.material as THREE.MeshStandardMaterial).color.set(accentColor);
+      (ceilingBar.material as THREE.MeshStandardMaterial).emissive.set(accentColor);
+      ceilingBar.position.set(topCenterX, wallTopY - coverThickness - 0.02, zCenter);
+      this.scene.add(ceilingBar);
+
+      for (const zEdge of [zStart, this.sideRampEndZ] as const) {
+        const cheek = new THREE.Mesh(
+          new THREE.BoxGeometry(run + 0.04, tunnelInnerHeight, cheekThickness),
+          tunnelInnerMaterial,
+        );
+        const cheekZ = zEdge + (zEdge === zStart ? cheekThickness / 2 : -cheekThickness / 2);
+        cheek.position.set(topCenterX, tunnelClearBottom + tunnelInnerHeight / 2, cheekZ);
+        cheek.castShadow = true;
+        cheek.receiveShadow = true;
+        this.scene.add(cheek);
+        this.addStaticBody(
+          vec3((run + 0.04) / 2, tunnelInnerHeight / 2, cheekThickness / 2),
+          vec3(topCenterX, tunnelClearBottom + tunnelInnerHeight / 2, cheekZ),
+        );
+
+        const cheekTrim = new THREE.Mesh(
+          new THREE.BoxGeometry(run * 0.92, 0.04, 0.03),
+          accentStripMaterial.clone(),
+        );
+        (cheekTrim.material as THREE.MeshStandardMaterial).color.set(accentColor);
+        (cheekTrim.material as THREE.MeshStandardMaterial).emissive.set(accentColor);
+        cheekTrim.position.set(
+          topCenterX,
+          wallTopY - 0.08,
+          cheekZ + (zEdge === zStart ? 0.02 : -0.02),
+        );
+        this.scene.add(cheekTrim);
+      }
+
+      const outerFrame = new THREE.Mesh(
+        new THREE.BoxGeometry(0.08, coverThickness + 0.04, rampDepth + 0.04),
+        tunnelShellMaterial,
+      );
+      outerFrame.position.set(
+        direction * (joinX + run + 0.02),
+        wallTopY - coverThickness / 2,
+        zCenter,
+      );
+      outerFrame.castShadow = true;
+      this.scene.add(outerFrame);
+
+      // Entrance lintel + sill glow so the tunnel mouth reads clearly.
+      const mouthLintel = new THREE.Mesh(
+        new THREE.BoxGeometry(0.07, 0.07, rampDepth + 0.1),
+        accentStripMaterial.clone(),
+      );
+      (mouthLintel.material as THREE.MeshStandardMaterial).color.set(accentColor);
+      (mouthLintel.material as THREE.MeshStandardMaterial).emissive.set(accentColor);
+      mouthLintel.position.set(direction * (joinX + 0.02), wallTopY - 0.06, zCenter);
+      this.scene.add(mouthLintel);
+
+      const mouthSill = new THREE.Mesh(
+        new THREE.BoxGeometry(0.08, 0.03, rampDepth * 0.9),
+        warmStripMaterial,
+      );
+      mouthSill.position.set(direction * (joinX + 0.05), floorSurfaceY + 0.02, zCenter);
+      this.scene.add(mouthSill);
+
+      // Interior fill: wash the slope and walls with colored light.
+      const tunnelFill = new THREE.PointLight(accentColor, 18, 3.4, 1.6);
+      tunnelFill.position.set(
+        direction * (joinX + run * 0.42),
+        floorSurfaceY - drop * 0.25 + 0.35,
+        zCenter,
+      );
+      this.scene.add(tunnelFill);
+
+      const tunnelDownlight = new THREE.SpotLight(accentColor, 42, 4.2, 0.72, 0.55, 1.4);
+      tunnelDownlight.position.set(topCenterX, wallTopY - 0.12, zCenter);
+      tunnelDownlight.target.position.set(
+        direction * (joinX + run * 0.72),
+        floorSurfaceY - drop * 0.7,
+        zCenter,
+      );
+      tunnelDownlight.castShadow = true;
+      tunnelDownlight.shadow.mapSize.set(512, 512);
+      tunnelDownlight.shadow.bias = -0.0002;
+      this.scene.add(tunnelDownlight, tunnelDownlight.target);
+
+      const mouthGlow = new THREE.PointLight("#ffd166", 10, 2.6, 2);
+      mouthGlow.position.set(direction * (joinX + 0.25), floorSurfaceY + 0.35, zCenter);
+      this.scene.add(mouthGlow);
+
+      const exitGlow = new THREE.PointLight(accentColor, 12, 2.8, 2);
+      exitGlow.position.set(
+        direction * (joinX + run + 0.15),
+        floorSurfaceY - drop + 0.2,
+        zCenter,
+      );
+      this.scene.add(exitGlow);
     }
-    const values = index.array;
-    for (let offset = 0; offset < values.length; offset += 3) {
-      const swap = values[offset];
-      values[offset] = values[offset + 1];
-      values[offset + 1] = swap;
-    }
-    index.needsUpdate = true;
-    geometry.computeVertexNormals();
   }
 
   private addStaticBody(halfExtents: Vec3, position: Vec3, rotationX = 0, rotationZ = 0): void {
