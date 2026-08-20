@@ -216,6 +216,32 @@ export class CoinPusherApp {
   private coinTowerItemIds = new Set<string>();
   private coinTowerAnchoredIds = new Set<string>();
   private readonly coinTowerRestPoses = new Map<string, { x: number; y: number; z: number }>();
+  private payoutGlowLight: THREE.PointLight | null = null;
+  private payoutWarmLight: THREE.PointLight | null = null;
+  private readonly slotPitLights = new Map<SlotType, THREE.PointLight>();
+  private readonly collectRingGeometry = new THREE.RingGeometry(0.08, 0.32, 20);
+  /** Pooled GPU sparks — never add/remove lights or materials at collect time. */
+  private readonly collectFxMaxSparks = 96;
+  private readonly collectFxPositions = new Float32Array(96 * 3);
+  private readonly collectFxColors = new Float32Array(96 * 3);
+  private readonly collectFxBaseColors = new Float32Array(96 * 3);
+  private readonly collectFxVelocities = new Float32Array(96 * 3);
+  private readonly collectFxLife = new Float32Array(96);
+  private readonly collectFxMaxLife = new Float32Array(96);
+  private collectFxCursor = 0;
+  private collectFxPoints: THREE.Points | null = null;
+  private readonly collectRingPool: Array<{
+    mesh: THREE.Mesh;
+    material: THREE.MeshBasicMaterial;
+    age: number;
+    life: number;
+    active: boolean;
+  }> = [];
+  private readonly slotPitFlashBoost = new Map<SlotType, number>();
+  private payoutGlowFlashBoost = 0;
+  private payoutWarmFlashBoost = 0;
+  private collectFxSpawnsThisFrame = 0;
+  private collectUiPulsePending = false;
 
   public constructor(root: HTMLDivElement) {
     this.ui = createUI(root);
@@ -421,10 +447,12 @@ export class CoinPusherApp {
     const payoutGlow = new THREE.PointLight("#57d6ff", 12, 8, 2.2);
     payoutGlow.position.set(0, -0.18, this.collectionCenterZ + 0.22);
     this.scene.add(payoutGlow);
+    this.payoutGlowLight = payoutGlow;
 
     const payoutWarm = new THREE.PointLight("#ffd49a", 8, 6.5, 2.2);
     payoutWarm.position.set(0, -0.12, this.collectionCenterZ - 0.02);
     this.scene.add(payoutWarm);
+    this.payoutWarmLight = payoutWarm;
 
     const hallNeonLeft = new THREE.PointLight("#ff5fae", 20, 20, 2);
     hallNeonLeft.position.set(-5.8, 4.2, -4.2);
@@ -439,6 +467,7 @@ export class CoinPusherApp {
     this.scene.add(hallOverhead);
 
     this.setupMetalEnvironment();
+    this.initCollectEffects();
   }
 
   /** Soft studio env so high-metal coin faces pick up specular highlights. */
@@ -672,9 +701,9 @@ export class CoinPusherApp {
       );
     }
 
-    this.createSlotFrame(-3.05, 2.82, "宝箱区", "#ffbe5a");
-    this.createSlotFrame(0, 3.04, "Bonus", "#54f3ff");
-    this.createSlotFrame(3.05, 2.82, "高价值", "#ff6f4d");
+    this.createSlotFrame(-3.05, 2.82, "宝箱区", "#ffbe5a", "chest");
+    this.createSlotFrame(0, 3.04, "Bonus", "#54f3ff", "bonus");
+    this.createSlotFrame(3.05, 2.82, "高价值", "#ff6f4d", "highValue");
   }
 
   private createPusher(): void {
@@ -2794,7 +2823,13 @@ export class CoinPusherApp {
     return this.collectionDepth - 0.22;
   }
 
-  private createSlotFrame(x: number, width: number, label: string, color: string): void {
+  private createSlotFrame(
+    x: number,
+    width: number,
+    label: string,
+    color: string,
+    slot: SlotType,
+  ): void {
     const mouthWidth = width - 0.18;
     const mouthCenterZ = this.getCollectionPitCenterZ() + 0.02;
     const mouthY = this.getFloorSurfaceY() - 0.06;
@@ -2834,6 +2869,7 @@ export class CoinPusherApp {
     const pitLight = new THREE.PointLight(color, 4.2, 2.4, 2.4);
     pitLight.position.set(x, mouthY - 0.55, mouthCenterZ + 0.08);
     this.scene.add(pitLight);
+    this.slotPitLights.set(slot, pitLight);
 
     const paintWidth = Math.min(mouthWidth - 0.42, 2.18);
     const paint = this.createSprayPaintDecal(label, color, paintWidth);
@@ -4173,7 +4209,13 @@ export class CoinPusherApp {
       this.applyCoinTowerLift();
       this.maintainAnchoredCoinTower();
       this.syncMeshes();
+      this.collectFxSpawnsThisFrame = 0;
       this.resolveCollections();
+      this.updateCollectEffects(delta);
+      if (this.collectUiPulsePending) {
+        this.collectUiPulsePending = false;
+        this.pulseElement(this.ui.coinCard);
+      }
       this.processScheduledActions(now);
       this.updateTimers(delta);
       this.sampleFps(now);
@@ -4568,6 +4610,7 @@ export class CoinPusherApp {
 
   private collectItem(item: DropItem, slot: SlotType): void {
     item.collected = true;
+    this.spawnCollectEffect(item, slot);
 
     let coinsAwarded = 0;
     let diamondsAwarded = 0;
@@ -4606,7 +4649,7 @@ export class CoinPusherApp {
     this.state.diamonds += diamondsAwarded;
     this.state.fragments += fragmentsAwarded;
     this.state.totalEarnings += coinsAwarded;
-    this.pulseElement(this.ui.coinCard);
+    this.collectUiPulsePending = true;
     if (diamondsAwarded > 0) {
       this.pulseElement(this.ui.diamondCard);
     }
@@ -4973,6 +5016,251 @@ export class CoinPusherApp {
       if (item.type === "coin" && item.body.position.z > 2.3) {
         item.collected = true;
       }
+    }
+  }
+
+  private getSlotAccentColor(slot: SlotType): string {
+    switch (slot) {
+      case "chest":
+        return "#ffbe5a";
+      case "highValue":
+        return "#ff6f4d";
+      case "bonus":
+        return "#54f3ff";
+      default:
+        return "#ffd166";
+    }
+  }
+
+  private initCollectEffects(): void {
+    for (let i = 0; i < this.collectFxMaxSparks; i += 1) {
+      this.collectFxLife[i] = 0;
+      this.collectFxPositions[i * 3 + 1] = -999;
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    const positionAttr = new THREE.BufferAttribute(this.collectFxPositions, 3);
+    positionAttr.setUsage(THREE.DynamicDrawUsage);
+    const colorAttr = new THREE.BufferAttribute(this.collectFxColors, 3);
+    colorAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute("position", positionAttr);
+    geometry.setAttribute("color", colorAttr);
+
+    const material = new THREE.PointsMaterial({
+      size: 0.16,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+
+    this.collectFxPoints = new THREE.Points(geometry, material);
+    this.collectFxPoints.frustumCulled = false;
+    this.collectFxPoints.renderOrder = 4;
+    this.scene.add(this.collectFxPoints);
+
+    for (let i = 0; i < 4; i += 1) {
+      const ringMaterial = new THREE.MeshBasicMaterial({
+        color: "#ffffff",
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const ring = new THREE.Mesh(this.collectRingGeometry, ringMaterial);
+      ring.rotation.x = -Math.PI / 2;
+      ring.visible = false;
+      ring.frustumCulled = false;
+      ring.renderOrder = 3;
+      this.scene.add(ring);
+      this.collectRingPool.push({
+        mesh: ring,
+        material: ringMaterial,
+        age: 0,
+        life: 0.4,
+        active: false,
+      });
+    }
+  }
+
+  private spawnCollectEffect(item: DropItem, slot: SlotType): void {
+    this.flashSlotPitLight(slot, item.type === "rare" ? 1.35 : item.type === "chest" ? 1.15 : 1);
+
+    if (this.collectFxSpawnsThisFrame >= 3) {
+      return;
+    }
+    this.collectFxSpawnsThisFrame += 1;
+
+    const color = new THREE.Color(this.getSlotAccentColor(slot));
+    const rareBoost = item.type === "rare" ? 1.35 : item.type === "chest" ? 1.15 : 1;
+    const sparkCount = Math.round(6 * rareBoost);
+    const originX = item.body.position.x;
+    const originY = Math.min(item.body.position.y + 0.08, this.getFloorSurfaceY() - 0.02);
+    const originZ = item.body.position.z;
+
+    for (let i = 0; i < sparkCount; i += 1) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 0.9 + Math.random() * 1.8 * rareBoost;
+      this.emitCollectSpark(
+        originX,
+        originY,
+        originZ,
+        Math.cos(angle) * speed,
+        1.2 + Math.random() * 2.2 * rareBoost,
+        Math.sin(angle) * speed * 0.5 - 0.25,
+        i % 3 === 0 ? 1 : color.r,
+        i % 3 === 0 ? 0.95 : color.g,
+        i % 3 === 0 ? 0.78 : color.b,
+        0.32 + Math.random() * 0.12,
+      );
+    }
+
+    this.spawnCollectRing(originX, originY, originZ, color);
+  }
+
+  private emitCollectSpark(
+    x: number,
+    y: number,
+    z: number,
+    vx: number,
+    vy: number,
+    vz: number,
+    r: number,
+    g: number,
+    b: number,
+    life: number,
+  ): void {
+    const index = this.collectFxCursor;
+    this.collectFxCursor = (index + 1) % this.collectFxMaxSparks;
+    const i3 = index * 3;
+    this.collectFxPositions[i3] = x;
+    this.collectFxPositions[i3 + 1] = y;
+    this.collectFxPositions[i3 + 2] = z;
+    this.collectFxVelocities[i3] = vx;
+    this.collectFxVelocities[i3 + 1] = vy;
+    this.collectFxVelocities[i3 + 2] = vz;
+    this.collectFxBaseColors[i3] = r;
+    this.collectFxBaseColors[i3 + 1] = g;
+    this.collectFxBaseColors[i3 + 2] = b;
+    this.collectFxColors[i3] = r;
+    this.collectFxColors[i3 + 1] = g;
+    this.collectFxColors[i3 + 2] = b;
+    this.collectFxLife[index] = life;
+    this.collectFxMaxLife[index] = life;
+  }
+
+  private spawnCollectRing(x: number, y: number, z: number, color: THREE.Color): void {
+    const ring = this.collectRingPool.find((entry) => !entry.active) ?? this.collectRingPool[0];
+    if (!ring) {
+      return;
+    }
+    ring.active = true;
+    ring.age = 0;
+    ring.life = 0.38;
+    ring.material.color.copy(color);
+    ring.material.opacity = 0.85;
+    ring.mesh.visible = true;
+    ring.mesh.position.set(x, y, z);
+    ring.mesh.scale.setScalar(0.55);
+  }
+
+  private flashSlotPitLight(slot: SlotType, intensityScale: number): void {
+    const current = this.slotPitFlashBoost.get(slot) ?? 0;
+    this.slotPitFlashBoost.set(slot, Math.min(14, current + 5.5 * intensityScale));
+    this.payoutGlowFlashBoost = Math.min(12, this.payoutGlowFlashBoost + 3.5 * intensityScale);
+    this.payoutWarmFlashBoost = Math.min(8, this.payoutWarmFlashBoost + 2.5 * intensityScale);
+  }
+
+  private updateCollectEffects(deltaSeconds: number): void {
+    const positions = this.collectFxPositions;
+    const velocities = this.collectFxVelocities;
+    const colors = this.collectFxColors;
+    const baseColors = this.collectFxBaseColors;
+    const lives = this.collectFxLife;
+    const maxLives = this.collectFxMaxLife;
+    let needsUpload = false;
+
+    for (let index = 0; index < this.collectFxMaxSparks; index += 1) {
+      const life = lives[index];
+      if (life <= 0) {
+        continue;
+      }
+
+      needsUpload = true;
+      const nextLife = life - deltaSeconds;
+      const i3 = index * 3;
+      if (nextLife <= 0) {
+        lives[index] = 0;
+        positions[i3 + 1] = -999;
+        colors[i3] = 0;
+        colors[i3 + 1] = 0;
+        colors[i3 + 2] = 0;
+        continue;
+      }
+
+      lives[index] = nextLife;
+      velocities[i3 + 1] -= 9.5 * deltaSeconds;
+      positions[i3] += velocities[i3] * deltaSeconds;
+      positions[i3 + 1] += velocities[i3 + 1] * deltaSeconds;
+      positions[i3 + 2] += velocities[i3 + 2] * deltaSeconds;
+
+      const fade = nextLife / Math.max(0.0001, maxLives[index]);
+      const brightness = fade * fade;
+      colors[i3] = baseColors[i3] * brightness;
+      colors[i3 + 1] = baseColors[i3 + 1] * brightness;
+      colors[i3 + 2] = baseColors[i3 + 2] * brightness;
+    }
+
+    if (needsUpload && this.collectFxPoints) {
+      const geometry = this.collectFxPoints.geometry;
+      (geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+      (geometry.getAttribute("color") as THREE.BufferAttribute).needsUpdate = true;
+    }
+
+    for (const ring of this.collectRingPool) {
+      if (!ring.active) {
+        continue;
+      }
+      ring.age += deltaSeconds;
+      const t = Math.min(1, ring.age / ring.life);
+      ring.mesh.scale.setScalar(0.55 + t * 2.2);
+      ring.material.opacity = 0.85 * (1 - t) * (1 - t);
+      if (t >= 1) {
+        ring.active = false;
+        ring.mesh.visible = false;
+        ring.material.opacity = 0;
+      }
+    }
+
+    this.updateCollectLightFlash(deltaSeconds);
+  }
+
+  private updateCollectLightFlash(deltaSeconds: number): void {
+    const decay = 18 * deltaSeconds;
+
+    for (const [slot, boost] of this.slotPitFlashBoost) {
+      const next = Math.max(0, boost - decay);
+      if (next > 0) {
+        this.slotPitFlashBoost.set(slot, next);
+      } else {
+        this.slotPitFlashBoost.delete(slot);
+      }
+      const light = this.slotPitLights.get(slot);
+      if (light) {
+        light.intensity = 4.2 + next;
+      }
+    }
+
+    this.payoutGlowFlashBoost = Math.max(0, this.payoutGlowFlashBoost - decay);
+    this.payoutWarmFlashBoost = Math.max(0, this.payoutWarmFlashBoost - decay);
+    if (this.payoutGlowLight) {
+      this.payoutGlowLight.intensity = 12 + this.payoutGlowFlashBoost;
+    }
+    if (this.payoutWarmLight) {
+      this.payoutWarmLight.intensity = 8 + this.payoutWarmFlashBoost;
     }
   }
 
