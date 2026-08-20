@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { PhysicsBody } from "./physics/RapierWorld";
 
 export type DropItemType = "coin" | "chest" | "rare";
+export type CoinFaceStyle = "copper" | "gold" | "prism";
 export type BonusType = "coinRain" | "fever" | "chestDrop";
 export type SlotType = "normal" | "bonus" | "chest" | "highValue";
 

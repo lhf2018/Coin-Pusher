@@ -39,7 +39,7 @@ const DEFAULT_FLOOR_FRICTION = 0.42;
 const DEFAULT_FLOOR_RESTITUTION = 0.0;
 const DEFAULT_PUSHER_FRICTION = 0.28;
 const ITEM_FRICTION: Record<DynamicItemKind, number> = {
-  coin: 0.38,
+  coin: 0.72,
   chest: 0.34,
   rare: 0.3,
 };
@@ -267,8 +267,8 @@ export class RapierPhysicsWorld {
     await RAPIER.init();
     this.world = new RAPIER.World({ x: 0, y: -14.6, z: 0 });
     this.world.timestep = 1 / 90;
-    this.world.integrationParameters.numSolverIterations = 16;
-    this.world.integrationParameters.numInternalPgsIterations = 4;
+    this.world.integrationParameters.numSolverIterations = 12;
+    this.world.integrationParameters.numInternalPgsIterations = 2;
     this.world.integrationParameters.maxCcdSubsteps = 8;
     this.world.integrationParameters.normalizedAllowedLinearError = 0.0008;
     this.world.integrationParameters.normalizedPredictionDistance = 0.004;
@@ -332,6 +332,7 @@ export class RapierPhysicsWorld {
 
   public createDynamicBody(spec: DynamicBodySpec): PhysicsBody {
     const world = this.requireWorld();
+    const isCoin = spec.kind === "coin";
     const desc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(spec.position.x, spec.position.y, spec.position.z)
       .setRotation(quatFromEulerX(spec.rotationX ?? 0))
@@ -340,8 +341,9 @@ export class RapierPhysicsWorld {
       .setLinearDamping(spec.linearDamping)
       .setAngularDamping(spec.angularDamping)
       .setCcdEnabled(false)
+      .setSoftCcdPrediction(isCoin ? 0.18 : 0)
       .setCanSleep(true)
-      .setAdditionalSolverIterations(1);
+      .setAdditionalSolverIterations(isCoin ? 2 : 1);
 
     const body = world.createRigidBody(desc);
     world.createCollider(this.createItemCollider(spec.kind), body);
@@ -376,9 +378,9 @@ export class RapierPhysicsWorld {
       return RAPIER.ColliderDesc.cylinder(0.055, 0.33)
         .setFriction(friction)
         .setRestitution(0)
-        .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
-        .setContactSkin(0.003)
-        .setDensity(18);
+        .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max)
+        .setContactSkin(0.004)
+        .setDensity(52);
     }
     if (kind === "chest") {
       return RAPIER.ColliderDesc.cuboid(0.41, 0.3, 0.36)

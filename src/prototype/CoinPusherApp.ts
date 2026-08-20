@@ -11,6 +11,7 @@ import {
 import { createUI, UIRefs } from "./ui";
 import {
   BonusType,
+  CoinFaceStyle,
   DebugOverrides,
   DropItem,
   DropItemType,
@@ -64,7 +65,11 @@ export class CoinPusherApp {
   private readonly ui: UIRefs;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(56, 1, 0.1, 120);
-  private readonly renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  private readonly renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    alpha: true,
+    powerPreference: "high-performance",
+  });
   private readonly physics = new RapierPhysicsWorld();
   private readonly clock = new THREE.Clock();
 
@@ -149,6 +154,16 @@ export class CoinPusherApp {
   }> = [];
   private pusherDecorElapsed = 0;
   private readonly ledGlyphCache = new Map<string, Uint8Array>();
+  private readonly ledCellGeometryCache = new Map<string, THREE.BoxGeometry>();
+  private readonly coinLookCache = new Map<
+    CoinFaceStyle,
+    {
+      faceMaterial: THREE.MeshStandardMaterial;
+      edgeMaterial: THREE.MeshStandardMaterial;
+    }
+  >();
+  private coinRefImage: HTMLImageElement | null = null;
+  private coinLooksReady: Promise<void> | null = null;
   private debugPanelBuilt = false;
   private physicsReady = false;
   private physicsBackend: "rapier" | "taichi-hybrid" | "probing" | "failed" = "probing";
@@ -161,6 +176,16 @@ export class CoinPusherApp {
   private lastViewportHeight = 0;
   private lastFrameAtMs = 0;
   private frameInProgress = false;
+  private uiTasksDirty = true;
+  private uiMessagesDirty = true;
+  private uiDebugDirty = true;
+  private ledUpdateAccumulator = 0;
+  private lastPhysicsStatusKey = "";
+  private lastUpgradeUiKey = "";
+  private lastBonusUiKey = "";
+  private lastFeverUiKey = "";
+  private lastTowerButtonKey = "";
+  private lastAutoDropUiKey = "";
   /** Center playfield lift hatch — coins rise through this circular opening. */
   private readonly floorHoleCenterX = 0;
   private readonly floorHoleCenterZ = 0.55;
@@ -231,6 +256,7 @@ export class CoinPusherApp {
     try {
       await this.physics.init();
       this.physicsReady = true;
+      await this.ensureCoinLooksReady();
       this.createTable();
       this.createPusher();
       this.createPusherTunnel();
@@ -332,9 +358,9 @@ export class CoinPusherApp {
   }
 
   private configureRenderer(): void {
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.14;
     this.ui.viewport.append(this.renderer.domElement);
@@ -365,8 +391,8 @@ export class CoinPusherApp {
     const key = new THREE.SpotLight("#ffe8c6", 168, 38, 0.34, 0.55, 1);
     key.position.set(-3.4, 11.5, 8.2);
     key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
-    key.shadow.radius = 4;
+    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.radius = 2;
     key.shadow.bias = -0.00008;
     key.shadow.normalBias = 0.02;
     key.target.position.set(0, 0.42, 1.55);
@@ -375,15 +401,13 @@ export class CoinPusherApp {
     const sideKey = new THREE.SpotLight("#ffc8e8", 78, 30, 0.55, 0.65, 1.8);
     sideKey.position.set(6.2, 5.8, 5.2);
     sideKey.target.position.set(3.2, 0.2, this.sideExitLineZ + 0.4);
-    sideKey.castShadow = true;
-    sideKey.shadow.mapSize.set(1024, 1024);
+    sideKey.castShadow = false;
     this.scene.add(sideKey, sideKey.target);
 
     const sideKeyLeft = new THREE.SpotLight("#c8f0ff", 78, 30, 0.55, 0.65, 1.8);
     sideKeyLeft.position.set(-6.2, 5.8, 5.2);
     sideKeyLeft.target.position.set(-3.2, 0.2, this.sideExitLineZ + 0.4);
-    sideKeyLeft.castShadow = true;
-    sideKeyLeft.shadow.mapSize.set(1024, 1024);
+    sideKeyLeft.castShadow = false;
     this.scene.add(sideKeyLeft, sideKeyLeft.target);
 
     const rim = new THREE.PointLight("#ff6ec7", 18, 22, 2);
@@ -413,6 +437,42 @@ export class CoinPusherApp {
     const hallOverhead = new THREE.PointLight("#ffd166", 30, 28, 2);
     hallOverhead.position.set(0, 6.8, -2.4);
     this.scene.add(hallOverhead);
+
+    this.setupMetalEnvironment();
+  }
+
+  /** Soft studio env so high-metal coin faces pick up specular highlights. */
+  private setupMetalEnvironment(): void {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envScene = new THREE.Scene();
+
+    const addPanel = (color: string, position: THREE.Vector3, rotation: THREE.Euler, size = 14) => {
+      const panel = new THREE.Mesh(
+        new THREE.PlaneGeometry(size, size),
+        new THREE.MeshBasicMaterial({ color }),
+      );
+      panel.position.copy(position);
+      panel.rotation.copy(rotation);
+      envScene.add(panel);
+    };
+
+    addPanel("#ffffff", new THREE.Vector3(0, 9, 0), new THREE.Euler(-Math.PI / 2, 0, 0), 18);
+    addPanel("#3a3048", new THREE.Vector3(0, -3, 0), new THREE.Euler(Math.PI / 2, 0, 0), 18);
+    addPanel("#ffd0e8", new THREE.Vector3(-8, 3, 0), new THREE.Euler(0, Math.PI / 2, 0), 12);
+    addPanel("#c8f4ff", new THREE.Vector3(8, 3, 0), new THREE.Euler(0, -Math.PI / 2, 0), 12);
+    addPanel("#fff0c8", new THREE.Vector3(0, 3, 8), new THREE.Euler(0, Math.PI, 0), 12);
+    addPanel("#4a3a58", new THREE.Vector3(0, 3, -8), new THREE.Euler(0, 0, 0), 12);
+
+    const envMap = pmrem.fromScene(envScene, 0.02).texture;
+    this.scene.environment = envMap;
+    this.scene.environmentIntensity = 1.25;
+    pmrem.dispose();
+    envScene.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.geometry.dispose();
+        (object.material as THREE.Material).dispose();
+      }
+    });
   }
 
   private createTable(): void {
@@ -888,8 +948,8 @@ export class CoinPusherApp {
       0,
       mainY,
       backFaceZ + 0.012,
-      24,
-      12,
+      10,
+      5,
       mainWidth - 0.12,
       mainHeight - 0.12,
       techColors,
@@ -907,8 +967,8 @@ export class CoinPusherApp {
       -sideX,
       holeCenterY + 0.04,
       backFaceZ + 0.012,
-      8,
-      16,
+      4,
+      7,
       sidePanelWidth - 0.1,
       sidePanelHeight - 0.1,
       ["#00e8ff", "#7b8cff", "#ff6ec7"],
@@ -922,8 +982,8 @@ export class CoinPusherApp {
       sideX,
       holeCenterY + 0.04,
       backFaceZ + 0.012,
-      8,
-      16,
+      4,
+      7,
       sidePanelWidth - 0.1,
       sidePanelHeight - 0.1,
       ["#00f5d4", "#4da6ff", "#ffd166"],
@@ -942,7 +1002,7 @@ export class CoinPusherApp {
         bannerY,
         backFaceZ + 0.012,
         bannerWidth - 0.1,
-        26,
+        10,
         "horizontal",
         techColors,
         9.5,
@@ -955,7 +1015,7 @@ export class CoinPusherApp {
       mainY + mainHeight / 2 + 0.1,
       backFaceZ + 0.015,
       mainWidth + 0.2,
-      24,
+      10,
       "horizontal",
       techColors,
       11,
@@ -968,7 +1028,7 @@ export class CoinPusherApp {
         holeCenterY,
         backFaceZ + 0.015,
         sidePanelHeight + 0.15,
-        14,
+        8,
         "vertical",
         techColors,
         8.5,
@@ -1016,8 +1076,8 @@ export class CoinPusherApp {
       0,
       panelY,
       faceZ,
-      30,
-      9,
+      10,
+      4,
       panelWidth - 0.14,
       panelHeight - 0.14,
       techColors,
@@ -1031,7 +1091,7 @@ export class CoinPusherApp {
       panelY + panelHeight / 2 + 0.07,
       faceZ + 0.012,
       panelWidth + 0.08,
-      22,
+      10,
       "horizontal",
       techColors,
       12,
@@ -1231,9 +1291,8 @@ export class CoinPusherApp {
     this.coinChuteX = THREE.MathUtils.lerp(this.coinChuteMinX, this.coinChuteMaxX, tri);
     this.coinChuteCarriage.position.x = this.coinChuteX;
     this.coinChuteCarriage.updateMatrixWorld(true);
-    const mouthPoint = this.coinChuteMouthLocal.clone();
-    this.coinChuteCarriage.localToWorld(mouthPoint);
-    this.coinChuteMouthWorld.copy(mouthPoint);
+    this.coinChuteMouthWorld.copy(this.coinChuteMouthLocal);
+    this.coinChuteCarriage.localToWorld(this.coinChuteMouthWorld);
   }
 
   private getCoinChuteDropPose(): { x: number; y: number; z: number } {
@@ -1245,9 +1304,13 @@ export class CoinPusherApp {
       };
     }
     this.coinChuteCarriage.updateMatrixWorld(true);
-    const mouthPoint = this.coinChuteMouthLocal.clone();
-    this.coinChuteCarriage.localToWorld(mouthPoint);
-    return { x: mouthPoint.x, y: mouthPoint.y, z: mouthPoint.z };
+    this.coinChuteMouthWorld.copy(this.coinChuteMouthLocal);
+    this.coinChuteCarriage.localToWorld(this.coinChuteMouthWorld);
+    return {
+      x: this.coinChuteMouthWorld.x,
+      y: this.coinChuteMouthWorld.y,
+      z: this.coinChuteMouthWorld.z,
+    };
   }
 
   private addLedTechFrame(
@@ -1289,6 +1352,17 @@ export class CoinPusherApp {
     }
   }
 
+  private getLedCellGeometry(width: number, height: number, depth: number): THREE.BoxGeometry {
+    const key = `${width.toFixed(4)}:${height.toFixed(4)}:${depth.toFixed(4)}`;
+    const cached = this.ledCellGeometryCache.get(key);
+    if (cached) {
+      return cached;
+    }
+    const geometry = new THREE.BoxGeometry(width, height, depth);
+    this.ledCellGeometryCache.set(key, geometry);
+    return geometry;
+  }
+
   private addLedMatrix(
     x: number,
     y: number,
@@ -1306,6 +1380,7 @@ export class CoinPusherApp {
     const cellH = height / rows;
     const gap = 0.014;
     const segments: THREE.MeshStandardMaterial[] = [];
+    const geometry = this.getLedCellGeometry(cellW - gap, cellH - gap, 0.016);
 
     for (let row = 0; row < rows; row += 1) {
       for (let col = 0; col < cols; col += 1) {
@@ -1319,10 +1394,7 @@ export class CoinPusherApp {
         });
         segments.push(material);
 
-        const cell = new THREE.Mesh(
-          new THREE.BoxGeometry(cellW - gap, cellH - gap, 0.016),
-          material,
-        );
+        const cell = new THREE.Mesh(geometry, material);
         cell.position.set(
           x - width / 2 + cellW / 2 + col * cellW,
           y - height / 2 + cellH / 2 + row * cellH,
@@ -1349,6 +1421,11 @@ export class CoinPusherApp {
     const segments: THREE.MeshStandardMaterial[] = [];
     const cellLength = length / count;
     const gap = 0.012;
+    const size =
+      orientation === "horizontal"
+        ? ([cellLength - gap, 0.038, 0.018] as const)
+        : ([0.038, cellLength - gap, 0.018] as const);
+    const geometry = this.getLedCellGeometry(size[0], size[1], size[2]);
 
     for (let index = 0; index < count; index += 1) {
       const color = colors[index % colors.length];
@@ -1361,11 +1438,7 @@ export class CoinPusherApp {
       });
       segments.push(material);
 
-      const size =
-        orientation === "horizontal"
-          ? [cellLength - gap, 0.038, 0.018] as const
-          : [0.038, cellLength - gap, 0.018] as const;
-      const cell = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+      const cell = new THREE.Mesh(geometry, material);
       const offset = -length / 2 + cellLength / 2 + index * cellLength;
       cell.position.set(
         orientation === "horizontal" ? x + offset : x,
@@ -1388,8 +1461,9 @@ export class CoinPusherApp {
     speed: number,
   ): void {
     const segments: THREE.MeshStandardMaterial[] = [];
-    const perSide = 10;
+    const perSide = 6;
     const positions: Array<[number, number]> = [];
+    const geometry = this.getLedCellGeometry(0.042, 0.042, 0.02);
 
     for (let index = 0; index < perSide; index += 1) {
       const t = index / (perSide - 1);
@@ -1419,7 +1493,7 @@ export class CoinPusherApp {
       });
       segments.push(material);
 
-      const cell = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.042, 0.02), material);
+      const cell = new THREE.Mesh(geometry, material);
       cell.position.set(px, py, z);
       this.scene.add(cell);
     });
@@ -1432,7 +1506,14 @@ export class CoinPusherApp {
       return;
     }
 
+    // LED material updates are CPU-heavy; ~20 Hz is enough for the chase look.
     this.pusherDecorElapsed += deltaSeconds;
+    this.ledUpdateAccumulator += deltaSeconds;
+    if (this.ledUpdateAccumulator < 0.05) {
+      return;
+    }
+    this.ledUpdateAccumulator = 0;
+
     const time = this.pusherDecorElapsed;
 
     for (const strip of this.pusherLedStrips) {
@@ -2275,64 +2356,363 @@ export class CoinPusherApp {
     return paint;
   }
 
-  private createCoinMesh(): THREE.Group {
-    const coin = new THREE.Group();
-    const edgeMaterial = new THREE.MeshStandardMaterial({
-      color: "#cf8619",
-      emissive: "#6a3703",
-      metalness: 0.92,
-      roughness: 0.22,
-    });
-    const faceMaterial = new THREE.MeshStandardMaterial({
-      color: "#ffd166",
-      emissive: "#9d6410",
-      metalness: 0.84,
-      roughness: 0.18,
-    });
-    const stampMaterial = new THREE.MeshStandardMaterial({
-      color: "#fff0ad",
-      emissive: "#8f6a17",
-      metalness: 0.68,
-      roughness: 0.26,
+  private ensureCoinLooksReady(): Promise<void> {
+    if (this.coinRefImage) {
+      return Promise.resolve();
+    }
+    if (this.coinLooksReady) {
+      return this.coinLooksReady;
+    }
+
+    this.coinLooksReady = new Promise<void>((resolve) => {
+      const image = new Image();
+      image.decoding = "async";
+      image.onload = () => {
+        this.coinRefImage = image;
+        this.coinLookCache.clear();
+        resolve();
+      };
+      image.onerror = () => {
+        console.warn("Failed to load coin reference texture; using procedural fallback.");
+        resolve();
+      };
+      image.src = "/textures/coin-gold-ref.png";
     });
 
-    const edge = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.35, 0.35, 0.12, 32),
+    return this.coinLooksReady;
+  }
+
+  private getCoinFacePalette(style: CoinFaceStyle): {
+    base: string;
+    mid: string;
+    highlight: string;
+    shade: string;
+    roughness: number;
+    clearcoat: number;
+    metalness: number;
+    envIntensity: number;
+  } {
+    // Satin struck-gold look from the Roman solidus reference.
+    if (style === "copper") {
+      return {
+        base: "#b87333",
+        mid: "#d4a574",
+        highlight: "#e8c49a",
+        shade: "#7a4a22",
+        roughness: 0.38,
+        clearcoat: 0.05,
+        metalness: 0.78,
+        envIntensity: 0.7,
+      };
+    }
+    if (style === "prism") {
+      return {
+        base: "#d4a017",
+        mid: "#f0d060",
+        highlight: "#ffe9a0",
+        shade: "#8a6208",
+        roughness: 0.28,
+        clearcoat: 0.12,
+        metalness: 0.82,
+        envIntensity: 0.85,
+      };
+    }
+    return {
+      base: "#c9962e",
+      mid: "#e0b84a",
+      highlight: "#f0d878",
+      shade: "#8a6818",
+      roughness: 0.32,
+      clearcoat: 0.06,
+      metalness: 0.8,
+      envIntensity: 0.78,
+    };
+  }
+
+  private createCoinNormalFromAlbedo(albedoCanvas: HTMLCanvasElement): THREE.CanvasTexture {
+    const size = albedoCanvas.width;
+    const srcCtx = albedoCanvas.getContext("2d");
+    const out = document.createElement("canvas");
+    out.width = size;
+    out.height = size;
+    const ctx = out.getContext("2d");
+    if (!srcCtx || !ctx) {
+      return new THREE.CanvasTexture(out);
+    }
+
+    // Light blur first so photo grain doesn't become noisy normals.
+    ctx.filter = "blur(1.2px)";
+    ctx.drawImage(albedoCanvas, 0, 0);
+    ctx.filter = "none";
+    const src = ctx.getImageData(0, 0, size, size).data;
+    const dst = ctx.createImageData(size, size);
+    const lum = (i: number) => (src[i]! * 0.299 + src[i + 1]! * 0.587 + src[i + 2]! * 0.114) / 255;
+    const strength = 1.7;
+
+    for (let y = 1; y < size - 1; y += 1) {
+      for (let x = 1; x < size - 1; x += 1) {
+        const i = (y * size + x) * 4;
+        const left = lum((y * size + (x - 1)) * 4);
+        const right = lum((y * size + (x + 1)) * 4);
+        const up = lum(((y - 1) * size + x) * 4);
+        const down = lum(((y + 1) * size + x) * 4);
+        const dx = (left - right) * strength;
+        const dy = (up - down) * strength;
+        const dz = 1;
+        const len = Math.hypot(dx, dy, dz) || 1;
+        dst.data[i] = Math.round(((dx / len) * 0.5 + 0.5) * 255);
+        dst.data[i + 1] = Math.round(((dy / len) * 0.5 + 0.5) * 255);
+        dst.data[i + 2] = Math.round(((dz / len) * 0.5 + 0.5) * 255);
+        dst.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(dst, 0, 0);
+
+    const texture = new THREE.CanvasTexture(out);
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  private createCoinFaceTexture(style: CoinFaceStyle): {
+    map: THREE.CanvasTexture;
+    normalMap: THREE.CanvasTexture;
+  } {
+    const palette = this.getCoinFacePalette(style);
+    const size = 512;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      const map = new THREE.CanvasTexture(canvas);
+      map.colorSpace = THREE.SRGBColorSpace;
+      return { map, normalMap: new THREE.CanvasTexture(canvas) };
+    }
+
+    const cx = size / 2;
+    const cy = size / 2;
+    const radius = size * 0.5;
+
+    ctx.fillStyle = palette.mid;
+    ctx.fillRect(0, 0, size, size);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+
+    if (this.coinRefImage) {
+      const image = this.coinRefImage;
+      const cover = Math.max(size / image.width, size / image.height) * 1.14;
+      const drawW = image.width * cover;
+      const drawH = image.height * cover;
+
+      if (style === "copper") {
+        ctx.filter = "hue-rotate(-28deg) saturate(0.92) brightness(0.94) contrast(1.08)";
+      } else if (style === "prism") {
+        ctx.filter = "saturate(1.1) brightness(1.03) contrast(1.08)";
+      } else {
+        ctx.filter = "saturate(1.08) brightness(1.03) contrast(1.08)";
+      }
+
+      ctx.drawImage(image, cx - drawW / 2, cy - drawH / 2, drawW, drawH);
+      ctx.filter = "none";
+
+      if (style === "copper") {
+        ctx.globalCompositeOperation = "multiply";
+        ctx.fillStyle = "rgba(190, 120, 70, 0.28)";
+        ctx.fillRect(0, 0, size, size);
+        ctx.globalCompositeOperation = "source-over";
+      }
+
+      if (style === "prism") {
+        ctx.globalCompositeOperation = "soft-light";
+        for (let i = 0; i < 8; i += 1) {
+          const start = (i / 8) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius * 0.97, start, start + Math.PI / 10);
+          ctx.arc(cx, cy, radius * 0.82, start + Math.PI / 10, start, true);
+          ctx.closePath();
+          ctx.fillStyle = i % 2 === 0 ? "rgba(61, 214, 198, 0.45)" : "rgba(255, 107, 157, 0.4)";
+          ctx.fill();
+        }
+        ctx.globalCompositeOperation = "source-over";
+      }
+    } else {
+      const disc = ctx.createRadialGradient(cx - 60, cy - 80, 20, cx, cy, radius);
+      disc.addColorStop(0, palette.highlight);
+      disc.addColorStop(0.55, palette.mid);
+      disc.addColorStop(1, palette.base);
+      ctx.fillStyle = disc;
+      ctx.fillRect(0, 0, size, size);
+    }
+
+    const rimShade = ctx.createRadialGradient(cx, cy, radius * 0.78, cx, cy, radius);
+    rimShade.addColorStop(0, "rgba(0,0,0,0)");
+    rimShade.addColorStop(0.7, "rgba(80, 50, 10, 0.08)");
+    rimShade.addColorStop(1, "rgba(40, 24, 4, 0.28)");
+    ctx.fillStyle = rimShade;
+    ctx.fillRect(0, 0, size, size);
+    ctx.restore();
+
+    const map = new THREE.CanvasTexture(canvas);
+    map.colorSpace = THREE.SRGBColorSpace;
+    map.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    map.needsUpdate = true;
+
+    return {
+      map,
+      normalMap: this.createCoinNormalFromAlbedo(canvas),
+    };
+  }
+
+  private createCoinEdgeTexture(style: CoinFaceStyle): THREE.CanvasTexture {
+    const palette = this.getCoinFacePalette(style);
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 64;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      gradient.addColorStop(0, palette.shade);
+      gradient.addColorStop(0.4, palette.mid);
+      gradient.addColorStop(0.7, palette.highlight);
+      gradient.addColorStop(1, palette.base);
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const reedCount = 140;
+      for (let i = 0; i < reedCount; i += 1) {
+        const x = (i / reedCount) * canvas.width;
+        const width = canvas.width / reedCount;
+        ctx.fillStyle = i % 2 === 0 ? "rgba(255, 210, 110, 0.18)" : "rgba(90, 55, 12, 0.2)";
+        ctx.fillRect(x, 1, width * 0.4, canvas.height - 2);
+      }
+
+      if (style === "prism") {
+        ctx.globalAlpha = 0.28;
+        ctx.fillStyle = "#3dd6c6";
+        ctx.fillRect(0, 4, canvas.width, 8);
+        ctx.fillStyle = "#ff6b9d";
+        ctx.fillRect(0, canvas.height - 12, canvas.width, 8);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.repeat.set(1, 1);
+    texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  private getCoinLook(style: CoinFaceStyle): {
+    faceMaterial: THREE.MeshStandardMaterial;
+    edgeMaterial: THREE.MeshStandardMaterial;
+  } {
+    const cached = this.coinLookCache.get(style);
+    if (cached) {
+      return cached;
+    }
+
+    const palette = this.getCoinFacePalette(style);
+    const { map: faceMap, normalMap } = this.createCoinFaceTexture(style);
+    const edgeMap = this.createCoinEdgeTexture(style);
+
+    // StandardMaterial is much cheaper than Physical+clearcoat for many coins.
+    const faceMaterial = new THREE.MeshStandardMaterial({
+      map: faceMap,
+      normalMap,
+      normalScale: new THREE.Vector2(0.65, 0.65),
+      color: "#ffffff",
+      metalness: palette.metalness,
+      roughness: palette.roughness,
+      envMapIntensity: palette.envIntensity,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+    });
+
+    const edgeMaterial = new THREE.MeshStandardMaterial({
+      map: edgeMap,
+      color: palette.mid,
+      metalness: Math.min(0.92, palette.metalness + 0.06),
+      roughness: Math.min(0.42, palette.roughness + 0.04),
+      envMapIntensity: palette.envIntensity,
+      emissive: "#000000",
+      emissiveIntensity: 0,
+    });
+
+    const look = { faceMaterial, edgeMaterial };
+    this.coinLookCache.set(style, look);
+    return look;
+  }
+
+  private rollCoinFaceStyle(bias: "default" | "tower" | "rain" = "default"): CoinFaceStyle {
+    if (bias === "tower") {
+      return "gold";
+    }
+    const roll = Math.random();
+    if (bias === "rain") {
+      if (roll > 0.7) {
+        return "prism";
+      }
+      return "gold";
+    }
+    if (roll > 0.9) {
+      return "prism";
+    }
+    if (roll > 0.22) {
+      return "gold";
+    }
+    return "copper";
+  }
+
+  private coinRewardForStyle(style: CoinFaceStyle): number {
+    if (style === "prism") {
+      return Math.round(BASE_CONFIG.baseCoinReward * 2);
+    }
+    if (style === "gold") {
+      return Math.round(BASE_CONFIG.baseCoinReward * 1.25);
+    }
+    return BASE_CONFIG.baseCoinReward;
+  }
+
+  private createCoinMesh(style: CoinFaceStyle = "gold"): THREE.Group {
+    const coin = new THREE.Group();
+    const { faceMaterial, edgeMaterial } = this.getCoinLook(style);
+
+    // Keep original coin thickness/radius; only the face pattern changed.
+    const radius = 0.35;
+    const height = 0.12;
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius, height, 48, 1, true),
       edgeMaterial,
     );
-    edge.castShadow = true;
-    edge.receiveShadow = true;
-    coin.add(edge);
+    body.castShadow = false;
+    body.receiveShadow = true;
+    coin.add(body);
 
+    const faceGeometry = new THREE.CircleGeometry(0.348, 48);
     for (const direction of [-1, 1] as const) {
-      const face = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.31, 0.31, 0.018, 32),
-        faceMaterial,
-      );
+      const face = new THREE.Mesh(faceGeometry, faceMaterial);
+      face.rotation.x = direction === 1 ? -Math.PI / 2 : Math.PI / 2;
       face.position.y = direction * 0.05;
-      face.castShadow = true;
+      face.castShadow = false;
       face.receiveShadow = true;
       coin.add(face);
     }
 
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(0.19, 0.022, 12, 32),
-      stampMaterial,
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = 0.056;
-    ring.castShadow = true;
-    ring.receiveShadow = true;
-    coin.add(ring);
-
-    const stamp = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.085, 0.085, 0.01, 24),
-      stampMaterial,
-    );
-    stamp.position.y = 0.058;
-    stamp.castShadow = true;
-    stamp.receiveShadow = true;
-    coin.add(stamp);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.338, 0.011, 10, 48), edgeMaterial);
+    rim.rotation.x = Math.PI / 2;
+    rim.castShadow = false;
+    rim.receiveShadow = true;
+    coin.add(rim);
 
     return coin;
   }
@@ -2656,9 +3036,7 @@ export class CoinPusherApp {
         floorSurfaceY - drop * 0.7,
         zCenter,
       );
-      tunnelDownlight.castShadow = true;
-      tunnelDownlight.shadow.mapSize.set(512, 512);
-      tunnelDownlight.shadow.bias = -0.0002;
+      tunnelDownlight.castShadow = false;
       this.scene.add(tunnelDownlight, tunnelDownlight.target);
 
       const mouthGlow = new THREE.PointLight("#ffd166", 10, 2.6, 2);
@@ -3125,11 +3503,11 @@ export class CoinPusherApp {
     const pusherFrontZ = this.pusherBody
       ? this.pusherBody.position.z + this.pusherDepth / 2
       : this.pusherStartZ;
-    // Release once the pusher face reaches the tower so it can be pushed naturally.
-    const release = pusherFrontZ >= this.floorHoleCenterZ - 0.35;
-    if (release) {
-      this.coinTowerAnchoredIds.clear();
-      this.coinTowerRestPoses.clear();
+    // Pusher max front is around z=-0.12; tower sits near floorHoleCenterZ.
+    // Release as soon as the face reaches the rear of the tower pack.
+    const releaseZ = this.floorHoleCenterZ - this.floorHoleRadius - 0.2;
+    if (pusherFrontZ >= releaseZ) {
+      this.releaseAnchoredCoinTower();
       return;
     }
 
@@ -3146,6 +3524,27 @@ export class CoinPusherApp {
       item.body.setAngularVelocitySilent(0, 0, 0);
       item.body.sleep();
     }
+  }
+
+  private releaseAnchoredCoinTower(): void {
+    if (this.coinTowerAnchoredIds.size === 0) {
+      return;
+    }
+
+    for (const item of this.items) {
+      if (!this.coinTowerAnchoredIds.has(item.id)) {
+        continue;
+      }
+      // Match ordinary dropped-coin damping so the pile isn't glued by tower spawn values.
+      item.body.raw.setLinearDamping(1.2);
+      item.body.raw.setAngularDamping(2.8);
+      item.body.wakeUp();
+      item.body.setVelocitySilent(0, 0, 0);
+      item.body.setAngularVelocitySilent(0, 0, 0);
+    }
+
+    this.coinTowerAnchoredIds.clear();
+    this.coinTowerRestPoses.clear();
   }
 
   private requestCoinTower(): void {
@@ -3205,7 +3604,8 @@ export class CoinPusherApp {
         const x = this.floorHoleCenterX + offset.x;
         const z = this.floorHoleCenterZ + offset.z;
 
-        const mesh = this.createCoinMesh();
+        const coinStyle = this.rollCoinFaceStyle("tower");
+        const mesh = this.createCoinMesh(coinStyle);
         mesh.position.set(x, startY, z);
         this.scene.add(mesh);
 
@@ -3215,8 +3615,8 @@ export class CoinPusherApp {
           rotationX: 0,
           velocity: vec3(0, 0, 0),
           angularVelocity: vec3(0, 0, 0),
-          linearDamping: 3.5,
-          angularDamping: 4.5,
+          linearDamping: 4.2,
+          angularDamping: 5.5,
         });
         body.sleep();
 
@@ -3225,7 +3625,7 @@ export class CoinPusherApp {
           type: "coin",
           body,
           mesh,
-          baseReward: BASE_CONFIG.baseCoinReward,
+          baseReward: this.coinRewardForStyle(coinStyle),
           spawnTime: performance.now(),
           collected: false,
           towerLift: { x, z, startY, targetY },
@@ -3279,6 +3679,7 @@ export class CoinPusherApp {
     });
     this.ui.debugToggleButton.addEventListener("click", () => {
       this.state.debugVisible = !this.state.debugVisible;
+      this.uiDebugDirty = true;
       this.renderState();
     });
     this.ui.coinUpgradeButton.addEventListener("click", () => this.purchaseUpgrade("coinValue"));
@@ -3499,6 +3900,7 @@ export class CoinPusherApp {
 
     this.debugOverrides = { ...preset.overrides };
     this.state.currentPresetId = preset.id;
+    this.uiDebugDirty = true;
     if (preset.overrides.startingCoins != null) {
       this.state.coins = preset.overrides.startingCoins;
       this.lastCoins = this.state.coins;
@@ -3574,6 +3976,8 @@ export class CoinPusherApp {
       randomSpin?: boolean;
       rotationX?: number;
       fromChute?: boolean;
+      coinStyle?: CoinFaceStyle;
+      coinStyleBias?: "default" | "tower" | "rain";
     },
   ): void {
     if (!this.physicsReady && !this.physics.isReady()) {
@@ -3599,10 +4003,12 @@ export class CoinPusherApp {
     let angularDamping = 0.2;
 
     if (type === "coin") {
-      mesh = this.createCoinMesh();
-      baseReward = BASE_CONFIG.baseCoinReward;
-      linearDamping = 0.55;
-      angularDamping = 1.4;
+      const coinStyle =
+        options?.coinStyle ?? this.rollCoinFaceStyle(options?.coinStyleBias ?? "default");
+      mesh = this.createCoinMesh(coinStyle);
+      baseReward = this.coinRewardForStyle(coinStyle);
+      linearDamping = 1.85;
+      angularDamping = 4.2;
     } else if (type === "chest") {
       mesh = this.createChestMesh();
       baseReward = 26;
@@ -3629,9 +4035,9 @@ export class CoinPusherApp {
     if (options?.randomSpin !== false) {
       if (type === "coin") {
         angularVelocity = vec3(
-          THREE.MathUtils.randFloat(-0.35, 0.35),
-          THREE.MathUtils.randFloat(-0.18, 0.18),
-          THREE.MathUtils.randFloat(-0.35, 0.35),
+          THREE.MathUtils.randFloat(-0.08, 0.08),
+          THREE.MathUtils.randFloat(-0.05, 0.05),
+          THREE.MathUtils.randFloat(-0.08, 0.08),
         );
       } else {
         angularVelocity = vec3(
@@ -3684,6 +4090,7 @@ export class CoinPusherApp {
           velocityX: 0,
           velocityZ: 0,
           randomSpin: false,
+          coinStyleBias: "default",
         });
       }
     }
@@ -4244,6 +4651,7 @@ export class CoinPusherApp {
           const spawnZ = THREE.MathUtils.randFloat(this.floorBackZ + 0.35, this.floorCenterZ + 0.5);
           this.spawnItem("coin", THREE.MathUtils.randFloat(-3.4, 3.4), spawnZ, {
             spawnY: this.getFloorSurfaceY(spawnZ) + 1.8,
+            coinStyleBias: "rain",
           });
         });
       }
@@ -4359,47 +4767,82 @@ export class CoinPusherApp {
     this.ui.fragments.textContent = formatShort(this.displayedFragments);
     this.ui.drops.textContent = String(this.state.drops);
     this.ui.activeBodies.textContent = String(this.items.length);
-    this.ui.autoDropButton.textContent = this.state.autoDropEnabled ? "自动投币：开" : "自动投币：关";
-    this.ui.coinTowerButton.disabled = !this.physicsReady || this.coinTowerPhase !== "idle";
-    this.ui.coinTowerButton.textContent =
-      this.coinTowerPhase === "idle" ? "升起金币塔" : "金币塔升降中…";
+
+    const autoDropKey = this.state.autoDropEnabled ? "on" : "off";
+    if (autoDropKey !== this.lastAutoDropUiKey) {
+      this.lastAutoDropUiKey = autoDropKey;
+      this.ui.autoDropButton.textContent = this.state.autoDropEnabled ? "自动投币：开" : "自动投币：关";
+    }
+
+    const towerKey = `${this.physicsReady}:${this.coinTowerPhase}`;
+    if (towerKey !== this.lastTowerButtonKey) {
+      this.lastTowerButtonKey = towerKey;
+      this.ui.coinTowerButton.disabled = !this.physicsReady || this.coinTowerPhase !== "idle";
+      this.ui.coinTowerButton.textContent =
+        this.coinTowerPhase === "idle" ? "升起金币塔" : "金币塔升降中…";
+    }
 
     const bonusRatio = clamp(this.displayedBonusCharge / this.state.bonusThreshold, 0, 1);
-    this.ui.bonusBarFill.style.transform = `scaleX(${bonusRatio})`;
-    this.ui.bonusLabel.textContent = this.describeBonusLabel();
+    const bonusKey = `${bonusRatio.toFixed(3)}:${this.describeBonusLabel()}`;
+    if (bonusKey !== this.lastBonusUiKey) {
+      this.lastBonusUiKey = bonusKey;
+      this.ui.bonusBarFill.style.transform = `scaleX(${bonusRatio})`;
+      this.ui.bonusLabel.textContent = this.describeBonusLabel();
+    }
 
-    this.ui.feverPill.classList.toggle("hidden", this.state.feverTimeLeft <= 0);
-    if (this.state.feverTimeLeft > 0) {
-      this.ui.feverPill.textContent = `FEVER x2 ${this.state.feverTimeLeft.toFixed(1)}s`;
+    const feverKey =
+      this.state.feverTimeLeft > 0 ? `on:${this.state.feverTimeLeft.toFixed(1)}` : "off";
+    if (feverKey !== this.lastFeverUiKey) {
+      this.lastFeverUiKey = feverKey;
+      this.ui.feverPill.classList.toggle("hidden", this.state.feverTimeLeft <= 0);
+      if (this.state.feverTimeLeft > 0) {
+        this.ui.feverPill.textContent = `FEVER x2 ${this.state.feverTimeLeft.toFixed(1)}s`;
+      }
     }
 
     const physicsStatus = this.getPhysicsStatusViewModel();
-    this.ui.physicsStatus.className = `physics-status ${physicsStatus.tone}`;
-    const physicsTitle = this.ui.physicsStatus.querySelector<HTMLElement>(".physics-status-title");
-    const physicsDetail = this.ui.physicsStatus.querySelector<HTMLElement>(".physics-status-detail");
-    if (physicsTitle) {
-      physicsTitle.textContent = physicsStatus.title;
-    }
-    if (physicsDetail) {
-      physicsDetail.textContent = physicsStatus.detail;
+    const physicsKey = `${physicsStatus.tone}|${physicsStatus.title}|${physicsStatus.detail}`;
+    if (physicsKey !== this.lastPhysicsStatusKey) {
+      this.lastPhysicsStatusKey = physicsKey;
+      this.ui.physicsStatus.className = `physics-status ${physicsStatus.tone}`;
+      const physicsTitle = this.ui.physicsStatus.querySelector<HTMLElement>(".physics-status-title");
+      const physicsDetail = this.ui.physicsStatus.querySelector<HTMLElement>(".physics-status-detail");
+      if (physicsTitle) {
+        physicsTitle.textContent = physicsStatus.title;
+      }
+      if (physicsDetail) {
+        physicsDetail.textContent = physicsStatus.detail;
+      }
     }
 
-    this.renderTasks();
-    this.renderMessages();
-    this.syncDebugPanel();
-    this.highlightPreset();
+    if (this.uiTasksDirty) {
+      this.renderTasks();
+      this.uiTasksDirty = false;
+    }
+    if (this.uiMessagesDirty) {
+      this.renderMessages();
+      this.uiMessagesDirty = false;
+    }
+    if (this.uiDebugDirty) {
+      this.syncDebugPanel();
+      this.highlightPreset();
+      this.uiDebugDirty = false;
+    }
 
     const coinValueCost = this.getUpgradeCost("coinValue");
     const speedCost = this.getUpgradeCost("pusherSpeed");
     const autoCost = this.getUpgradeCost("autoDrop");
-
-    this.ui.coinUpgradeButton.textContent = `金币收益 Lv.${this.state.upgrades.coinValue}  升级 ${coinValueCost}`;
-    this.ui.speedUpgradeButton.textContent = `推盘速度 Lv.${this.state.upgrades.pusherSpeed}  升级 ${speedCost}`;
-    this.ui.autoUpgradeButton.textContent = `自动投币 Lv.${this.state.upgrades.autoDrop}  升级 ${autoCost}`;
-    this.ui.economyHint.innerHTML = [
-      `<div>普通金币预估收益：<strong>${formatShort(this.getProjectedNormalReward())}</strong></div>`,
-      `<div>调试加金币当前生效：<strong>+${formatShort(this.getScaledCoinInjection(100))}</strong></div>`,
-    ].join("");
+    const upgradeKey = `${this.state.upgrades.coinValue}:${coinValueCost}|${this.state.upgrades.pusherSpeed}:${speedCost}|${this.state.upgrades.autoDrop}:${autoCost}`;
+    if (upgradeKey !== this.lastUpgradeUiKey) {
+      this.lastUpgradeUiKey = upgradeKey;
+      this.ui.coinUpgradeButton.textContent = `金币收益 Lv.${this.state.upgrades.coinValue}  升级 ${coinValueCost}`;
+      this.ui.speedUpgradeButton.textContent = `推盘速度 Lv.${this.state.upgrades.pusherSpeed}  升级 ${speedCost}`;
+      this.ui.autoUpgradeButton.textContent = `自动投币 Lv.${this.state.upgrades.autoDrop}  升级 ${autoCost}`;
+      this.ui.economyHint.innerHTML = [
+        `<div>普通金币预估收益：<strong>${formatShort(this.getProjectedNormalReward())}</strong></div>`,
+        `<div>调试加金币当前生效：<strong>+${formatShort(this.getScaledCoinInjection(100))}</strong></div>`,
+      ].join("");
+    }
 
     this.ui.debugToggleButton.textContent = this.state.debugVisible ? "收起调试" : "开发调试";
     this.ui.debugPanel.classList.toggle("hidden", !this.state.debugVisible);
@@ -4495,11 +4938,19 @@ export class CoinPusherApp {
   }
 
   private incrementTaskMetric(metric: SessionTask["metric"], delta: number): void {
+    let changed = false;
     for (const task of this.state.tasks) {
       if (task.metric !== metric || task.claimed) {
         continue;
       }
-      task.progress = Math.min(task.goal, task.progress + delta);
+      const next = Math.min(task.goal, task.progress + delta);
+      if (next !== task.progress) {
+        task.progress = next;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.uiTasksDirty = true;
     }
   }
 
@@ -4510,6 +4961,7 @@ export class CoinPusherApp {
     }
 
     task.claimed = true;
+    this.uiTasksDirty = true;
     this.state.coins += task.reward;
     this.pulseElement(this.ui.coinCard);
     this.pushMessage(`领取任务奖励：${task.reward} 金币。`);
@@ -4564,6 +5016,7 @@ export class CoinPusherApp {
   private pushMessage(message: string): void {
     this.state.messages.unshift(message);
     this.state.messages = this.state.messages.slice(0, 6);
+    this.uiMessagesDirty = true;
   }
 
   private resetSession(): void {
@@ -4573,6 +5026,9 @@ export class CoinPusherApp {
     this.state.currentPresetId = previousPresetId;
     this.state.tasks = createDefaultTasks();
     this.state.messages = [];
+    this.uiTasksDirty = true;
+    this.uiMessagesDirty = true;
+    this.uiDebugDirty = true;
     this.state.debugVisible = previousDebugVisible;
     this.items.forEach((item) => {
       this.physics.removeBody(item.body);
@@ -4724,6 +5180,7 @@ export class CoinPusherApp {
       [key]: value,
     };
     this.state.currentPresetId = "custom";
+    this.uiDebugDirty = true;
   }
 
   private getScaledCoinInjection(baseAmount: number): number {
